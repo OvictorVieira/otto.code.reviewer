@@ -131,3 +131,23 @@ func Repos(ctx context.Context) ([]string, error) {
 	}
 	return repos, nil
 }
+
+// CLI implements the app's GitHub port with the functions above.
+type CLI struct{}
+
+func (CLI) Login(ctx context.Context) (string, error)                    { return Login(ctx) }
+func (CLI) GetPR(ctx context.Context, repo string, n int) (PR, error)    { return GetPR(ctx, repo, n) }
+func (CLI) Diff(ctx context.Context, repo string, n int) (string, error) { return Diff(ctx, repo, n) }
+func (CLI) Repos(ctx context.Context) ([]string, error)                  { return Repos(ctx) }
+func (CLI) Comment(ctx context.Context, repo string, n int, body string) error {
+	return Comment(ctx, repo, n, body)
+}
+func (CLI) PostReview(ctx context.Context, repo string, n int, payload any) error {
+	return PostReview(ctx, repo, n, payload)
+}
+func (CLI) React(ctx context.Context, repo string, id int64, content string) error {
+	return React(ctx, repo, id, content)
+}
+func (CLI) CommentsSince(ctx context.Context, repo string, since time.Time) ([]trigger.Comment, error) {
+	return CommentsSince(ctx, repo, since)
+}

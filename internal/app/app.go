@@ -24,11 +24,49 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/workspace"
 )
 
-// App holds the loaded configuration and state.
+// Host is everything Otto needs from GitHub.
+type Host interface {
+	Login(ctx context.Context) (string, error)
+	GetPR(ctx context.Context, repo string, number int) (github.PR, error)
+	Diff(ctx context.Context, repo string, number int) (string, error)
+	PostReview(ctx context.Context, repo string, number int, payload any) error
+	Comment(ctx context.Context, repo string, number int, body string) error
+	React(ctx context.Context, repo string, commentID int64, content string) error
+	CommentsSince(ctx context.Context, repo string, since time.Time) ([]trigger.Comment, error)
+	Repos(ctx context.Context) ([]string, error)
+}
+
+// Checkout is a disposable working copy of a pull request head.
+type Checkout interface {
+	Dir() string
+	Remove()
+}
+
+// Checkouts creates checkouts and cleans up the ones a crash left behind.
+type Checkouts interface {
+	Prepare(ctx context.Context, repo string, number int, base string) (Checkout, error)
+	Sweep(olderThan time.Duration)
+}
+
+type gitCheckouts struct{ workspace.Git }
+
+func (g gitCheckouts) Prepare(ctx context.Context, repo string, number int, base string) (Checkout, error) {
+	wt, err := g.Git.Prepare(ctx, repo, number, base)
+	if err != nil {
+		return nil, err
+	}
+	return wt, nil
+}
+
+// App holds the loaded configuration, state and the ports to the outside world.
 type App struct {
-	Cfg   config.Config
-	State *trigger.State
-	Out   io.Writer
+	Cfg       config.Config
+	State     *trigger.State
+	Out       io.Writer
+	Host      Host
+	Checkouts Checkouts
+	NewEngine func(engine.Spec) engine.Engine
+	Installed func(name string) bool
 }
 
 // New loads config and state.
@@ -45,7 +83,13 @@ func New(out io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{Cfg: cfg, State: st, Out: out}, nil
+	return &App{
+		Cfg: cfg, State: st, Out: out,
+		Host:      github.CLI{},
+		Checkouts: gitCheckouts{},
+		NewEngine: func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
+		Installed: engine.Installed,
+	}, nil
 }
 
 func (a *App) logf(format string, args ...any) {
@@ -83,18 +127,18 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	ctx, cancel := context.WithTimeout(ctx, a.Cfg.Timeout)
 	defer cancel()
 
-	pr, err := github.GetPR(ctx, repo, number)
+	pr, err := a.Host.GetPR(ctx, repo, number)
 	if err != nil {
 		return Report{}, err
 	}
-	rawDiff, err := github.Diff(ctx, repo, number)
+	rawDiff, err := a.Host.Diff(ctx, repo, number)
 	if err != nil {
 		return Report{}, err
 	}
 	d := diff.Parse(rawDiff)
 
 	a.logf("%s#%d: preparing worktree at %s", repo, number, short(pr.HeadRefOid))
-	wt, err := workspace.Prepare(ctx, repo, number, pr.BaseRefName)
+	wt, err := a.Checkouts.Prepare(ctx, repo, number, pr.BaseRefName)
 	if err != nil {
 		return Report{}, err
 	}
@@ -120,9 +164,9 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	defer os.Remove(scratch.Name())
 
 	a.logf("%s#%d: reviewing (strategy %s, verify %v)", repo, number, pool.Strategy, a.Cfg.Verify)
-	accept := func(out string) error { _, err := review.ParseResult(out, wt.Dir); return err }
+	accept := func(out string) error { _, err := review.ParseResult(out, wt.Dir()); return err }
 	outcome, err := pool.Run(ctx, engine.Request{
-		Prompt: prompt, Dir: wt.Dir, OutFile: scratch.Name(), Verify: a.Cfg.Verify,
+		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify,
 	}, a.State.Rotation, accept)
 	for _, f := range outcome.Failures {
 		a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
@@ -135,7 +179,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		_ = a.State.Save()
 	}
 
-	result, _ := review.ParseResult(outcome.Output, wt.Dir)
+	result, _ := review.ParseResult(outcome.Output, wt.Dir())
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
 	spec := pool.spec(outcome.Index)
 	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger}
@@ -150,7 +194,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		return report, nil
 	}
 
-	if err := github.PostReview(ctx, repo, number, payload); err != nil {
+	if err := a.Host.PostReview(ctx, repo, number, payload); err != nil {
 		if len(payload.Comments) == 0 {
 			return report, err
 		}
@@ -159,7 +203,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		a.logf("%s#%d: inline comments rejected (%v); posting them in the summary", repo, number, err)
 		placement.Outside = append(placement.Inline, placement.Outside...)
 		placement.Inline = nil
-		if err := github.PostReview(ctx, repo, number, format.Payload(pr.HeadRefOid, placement, result, meta)); err != nil {
+		if err := a.Host.PostReview(ctx, repo, number, format.Payload(pr.HeadRefOid, placement, result, meta)); err != nil {
 			return report, err
 		}
 	}
@@ -182,19 +226,19 @@ func (a *App) pool(only string) (pool, error) {
 		if only != "" && s.Name != only {
 			continue
 		}
-		if !engine.Installed(s.Name) {
+		if !a.Installed(s.Name) {
 			a.logf("engine %s is configured but not installed; skipping", s.Name)
 			continue
 		}
-		p.Engines = append(p.Engines, engine.CLI{Spec: s})
+		p.Engines = append(p.Engines, a.NewEngine(s))
 		p.specs = append(p.specs, s)
 	}
 	if only != "" && len(p.Engines) == 0 {
-		if !engine.Installed(only) {
+		if !a.Installed(only) {
 			return p, fmt.Errorf("engine %q is not installed", only)
 		}
 		s := engine.Spec{Name: only}
-		p.Engines, p.specs = []engine.Engine{engine.CLI{Spec: s}}, []engine.Spec{s}
+		p.Engines, p.specs = []engine.Engine{a.NewEngine(s)}, []engine.Spec{s}
 	}
 	if len(p.Engines) == 0 {
 		return p, errors.New("no installed engine is configured: run `otto setup`")
@@ -204,9 +248,9 @@ func (a *App) pool(only string) (pool, error) {
 
 // Watch polls the configured repositories and answers trigger comments.
 func (a *App) Watch(ctx context.Context, once bool) error {
-	workspace.Sweep(2 * a.Cfg.Timeout)
+	a.Checkouts.Sweep(2 * a.Cfg.Timeout)
 
-	login, err := github.Login(ctx)
+	login, err := a.Host.Login(ctx)
 	if err != nil {
 		return fmt.Errorf("gh is not logged in (run `gh auth login`): %w", err)
 	}
@@ -220,7 +264,7 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	var reposAt time.Time
 	for {
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
-			if r, err := github.Repos(ctx); err == nil {
+			if r, err := a.Host.Repos(ctx); err == nil {
 				repos, reposAt = r, time.Now()
 			} else {
 				a.logf("listing repositories failed: %v", err)
@@ -252,7 +296,7 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 func (a *App) poll(ctx context.Context, repo string, allowed []string) {
 	started := time.Now()
 	since := a.State.Cursor(repo, started.Add(-a.Cfg.Lookback)).Add(-2 * time.Minute)
-	comments, err := github.CommentsSince(ctx, repo, since)
+	comments, err := a.Host.CommentsSince(ctx, repo, since)
 	if err != nil {
 		a.logf("%s: reading comments failed: %v", repo, err)
 		return
@@ -266,7 +310,7 @@ func (a *App) poll(ctx context.Context, repo string, allowed []string) {
 
 func (a *App) handle(ctx context.Context, req trigger.Request) {
 	a.logf("%s#%d: review requested by %s", req.Repo, req.PR, req.Author)
-	_ = github.React(ctx, req.Repo, req.CommentID, "eyes")
+	_ = a.Host.React(ctx, req.Repo, req.CommentID, "eyes")
 
 	report, err := a.Review(ctx, req.Repo, req.PR, Options{Instructions: req.Instructions})
 	if ctx.Err() != nil {
@@ -277,13 +321,13 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 
 	if err != nil {
 		a.logf("%s#%d: review failed: %v", req.Repo, req.PR, err)
-		_ = github.React(ctx, req.Repo, req.CommentID, "confused")
-		_ = github.Comment(ctx, req.Repo, req.PR, fmt.Sprintf(
+		_ = a.Host.React(ctx, req.Repo, req.CommentID, "confused")
+		_ = a.Host.Comment(ctx, req.Repo, req.PR, fmt.Sprintf(
 			"Otto could not finish this review.\n\n```\n%s\n```\n\nComment `%s` to try again.", trim(err.Error(), 1500), a.Cfg.Trigger))
 		return
 	}
 	if report.Findings == 0 {
-		_ = github.React(ctx, req.Repo, req.CommentID, "+1")
+		_ = a.Host.React(ctx, req.Repo, req.CommentID, "+1")
 	}
 }
 

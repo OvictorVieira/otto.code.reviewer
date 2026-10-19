@@ -16,9 +16,23 @@ import (
 
 // Worktree is a checkout of one pull request head.
 type Worktree struct {
-	Dir   string
+	path  string
 	cache string
 }
+
+// Dir is the checkout directory.
+func (w *Worktree) Dir() string { return w.path }
+
+// Git prepares worktrees with the local git and gh CLIs.
+type Git struct{}
+
+// Prepare implements the checkout port used by the app.
+func (Git) Prepare(ctx context.Context, repo string, number int, base string) (*Worktree, error) {
+	return Prepare(ctx, repo, number, base)
+}
+
+// Sweep implements the checkout port used by the app.
+func (Git) Sweep(olderThan time.Duration) { Sweep(olderThan) }
 
 func run(ctx context.Context, dir string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -76,7 +90,7 @@ func Prepare(ctx context.Context, repo string, number int, base string) (*Worktr
 	if err := run(ctx, cache, "git", "worktree", "add", "--detach", dir, ref); err != nil {
 		return nil, err
 	}
-	return &Worktree{Dir: dir, cache: cache}, nil
+	return &Worktree{path: dir, cache: cache}, nil
 }
 
 // Sweep removes worktrees left behind by an interrupted run (crash, reboot).
@@ -113,7 +127,7 @@ func Purge() error {
 // Remove deletes the worktree and everything the review created in it.
 func (w *Worktree) Remove() {
 	ctx := context.Background()
-	_ = run(ctx, w.cache, "git", "worktree", "remove", "--force", w.Dir)
-	_ = os.RemoveAll(w.Dir)
+	_ = run(ctx, w.cache, "git", "worktree", "remove", "--force", w.path)
+	_ = os.RemoveAll(w.path)
 	_ = run(ctx, w.cache, "git", "worktree", "prune")
 }

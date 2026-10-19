@@ -54,6 +54,9 @@ func (s *State) Save() error {
 	return os.Rename(tmp, s.path)
 }
 
+// Path is the state file location.
+func (s *State) Path() string { return s.path }
+
 // Done reports whether a comment was already handled.
 func (s *State) Done(id int64) bool { _, ok := s.Processed[id]; return ok }
 
