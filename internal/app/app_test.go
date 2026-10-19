@@ -394,3 +394,43 @@ func TestParseRefAcceptsCommonPullRequestReferences(t *testing.T) {
 		}
 	}
 }
+
+// ---- Self-update ---------------------------------------------------------
+
+func TestWatchUpdatesAndRestartsBeforeHandlingARequest(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.host.comments = []trigger.Comment{triggerComment(20, "OvictorVieira")}
+	var order []string
+	h.app.Upgrade = func(context.Context) (bool, error) { order = append(order, "upgrade"); return true, nil }
+	h.app.Restart = func() error { order = append(order, "restart"); return nil }
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(order, ",") != "upgrade,restart" {
+		t.Errorf("order = %v", order)
+	}
+	if len(h.host.posted) != 0 || h.app.State.Done(20) {
+		t.Error("the request must be left for the new version to handle")
+	}
+}
+
+func TestWatchCarriesOnWhenAlreadyUpToDateOrUpdateFails(t *testing.T) {
+	for name, up := range map[string]func(context.Context) (bool, error){
+		"up to date":    func(context.Context) (bool, error) { return false, nil },
+		"update failed": func(context.Context) (bool, error) { return false, errors.New("offline") },
+	} {
+		h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+		h.host.comments = []trigger.Comment{triggerComment(21, "OvictorVieira")}
+		h.app.Upgrade = up
+		h.app.Restart = func() error { t.Errorf("%s: must not restart", name); return nil }
+
+		if err := h.app.Watch(context.Background(), true); err != nil {
+			t.Fatal(err)
+		}
+		if len(h.host.posted) != 1 {
+			t.Errorf("%s: posted %d reviews, want 1", name, len(h.host.posted))
+		}
+	}
+}

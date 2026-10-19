@@ -21,6 +21,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/update"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/workspace"
 )
 
@@ -67,6 +68,11 @@ type App struct {
 	Checkouts Checkouts
 	NewEngine func(engine.Spec) engine.Engine
 	Installed func(name string) bool
+
+	// Upgrade installs a newer release when there is one and reports whether
+	// it did. Restart then replaces the process with the new binary.
+	Upgrade func(ctx context.Context) (bool, error)
+	Restart func() error
 }
 
 // New loads config and state.
@@ -85,6 +91,7 @@ func New(out io.Writer) (*App, error) {
 	}
 	return &App{
 		Cfg: cfg, State: st, Out: out,
+		Restart:   update.Restart,
 		Host:      github.CLI{},
 		Checkouts: gitCheckouts{},
 		NewEngine: func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
@@ -263,6 +270,9 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	var repos []string
 	var reposAt time.Time
 	for {
+		if a.selfUpdate(ctx) {
+			return nil // only reached when Restart returns (tests); normally the process is replaced
+		}
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
 			if r, err := a.Host.Repos(ctx); err == nil {
 				repos, reposAt = r, time.Now()
@@ -291,6 +301,32 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 		case <-time.After(a.Cfg.PollInterval):
 		}
 	}
+}
+
+// selfUpdate installs a newer release and restarts into it. Requests triggered
+// from GitHub run on the newest version: the pending comment is not marked
+// done, so the restarted process picks it up.
+func (a *App) selfUpdate(ctx context.Context) bool {
+	if a.Upgrade == nil {
+		return false
+	}
+	updated, err := a.Upgrade(ctx)
+	if err != nil {
+		a.logf("update check failed: %v", err)
+		return false
+	}
+	if !updated {
+		return false
+	}
+	a.logf("updated to a newer version, restarting")
+	if a.Restart == nil {
+		return false
+	}
+	if err := a.Restart(); err != nil {
+		a.logf("restart failed: %v", err)
+		return false
+	}
+	return true
 }
 
 func (a *App) poll(ctx context.Context, repo string, allowed []string) {
