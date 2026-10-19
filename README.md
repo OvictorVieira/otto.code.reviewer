@@ -307,6 +307,14 @@ worktree is deleted, and leftovers from a crash are swept on the next start.
   processes killed, worktree deleted
 ```
 
+## Updates
+
+- **By hand** (`otto setup`, `otto review`, ...): when a newer release exists, Otto asks `Update now? [Y/n]`, installs it
+  after verifying the checksum, and carries on with the new version. Say no and it asks again tomorrow.
+- **From GitHub** (the background watcher answering `/otto review`): Otto updates itself first, restarts, and then
+  handles the request, so a review always runs on the newest version. It never asks.
+- A check happens at most once an hour, and no network just means no update. `OTTO_NO_UPDATE=1` turns it off.
+
 ## Safety
 
 - Engines run inside the disposable worktree with file-editing tools disabled. The prompt forbids commits, pushes
