@@ -86,3 +86,46 @@ func TestCursorCatalogIgnoresMessages(t *testing.T) {
 		t.Errorf("ids = %v", ids)
 	}
 }
+
+func TestCodexCatalogHidesModelsCodexHidesItself(t *testing.T) {
+	cache := []byte(`{"models":[
+	{"slug":"gpt-6-luna","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]},
+	{"slug":"codex-auto-review","visibility":"hide","supported_reasoning_levels":[{"effort":"high"}]}]}`)
+
+	models := parseCodexCache(cache)
+
+	if len(models) != 1 || models[0].ID != "gpt-6-luna" {
+		t.Errorf("models = %+v, want only the listed one", models)
+	}
+}
+
+// Excerpt of `claude --help` from the installed CLI.
+const claudeHelp = `  --effort <level>                      Effort level for the current session
+                                        (low, medium, high, xhigh, max)
+  --model <model>                       Model for the current session. Provide
+                                        an alias for the latest model (e.g.
+                                        'fable', 'opus', or 'sonnet') or a
+                                        model's full name.
+`
+
+func TestClaudeCatalogComesFromTheInstalledCLIHelp(t *testing.T) {
+	models := parseClaudeHelp(claudeHelp)
+
+	var ids []string
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	if !slices.Equal(ids, []string{"fable", "opus", "sonnet", "haiku"}) {
+		t.Errorf("ids = %v, want the aliases from help plus haiku", ids)
+	}
+	if !slices.Equal(models[0].Efforts, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("efforts = %v", models[0].Efforts)
+	}
+}
+
+func TestClaudeCatalogFallsBackWhenHelpChanges(t *testing.T) {
+	models := parseClaudeHelp("usage: claude [options]")
+	if len(models) != 3 || len(models[0].Efforts) == 0 {
+		t.Errorf("fallback = %+v, want opus, sonnet, haiku with default efforts", models)
+	}
+}

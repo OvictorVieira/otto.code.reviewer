@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,13 +26,15 @@ type Model struct {
 func Catalog(name string) []Model {
 	switch name {
 	case "claude":
-		efforts := claudeEfforts
-		return []Model{
-			{ID: "opus", Label: "opus — most capable Opus (always the latest)", Efforts: efforts},
-			{ID: "sonnet", Label: "sonnet — balanced Sonnet (always the latest)", Efforts: efforts},
-			{ID: "haiku", Label: "haiku — fastest Haiku (always the latest)", Efforts: efforts},
-		}
+		help, _ := command(20*time.Second, "claude", "--help")
+		return parseClaudeHelp(help)
 	case "codex":
+		// `codex debug models` refreshes the catalog; the cache file is the offline fallback.
+		if out, err := command(60*time.Second, "codex", "debug", "models"); err == nil {
+			if models := parseCodexCache([]byte(out)); len(models) > 0 {
+				return models
+			}
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return nil
@@ -75,6 +78,58 @@ func Efforts(name string) []string {
 
 var claudeEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
+var (
+	claudeEffortHelp = regexp.MustCompile(`--effort <level>[^(]*\(([^)]*)\)`)
+	claudeModelHelp  = regexp.MustCompile(`(?s)--model <model>.*?\(e\.g\.(.*?)\)`)
+	quoted           = regexp.MustCompile(`'([a-z0-9][a-z0-9.-]*)'`)
+)
+
+var claudeAliasNote = map[string]string{
+	"opus":   "most capable Opus",
+	"sonnet": "balanced Sonnet",
+	"haiku":  "fastest Haiku",
+}
+
+// parseClaudeHelp reads the model aliases and effort levels the installed
+// Claude Code documents in `claude --help`, so new ones appear without an
+// Otto release. Known aliases fill in anything the help text does not mention.
+func parseClaudeHelp(help string) []Model {
+	efforts := claudeEfforts
+	if m := claudeEffortHelp.FindStringSubmatch(help); m != nil {
+		var levels []string
+		for _, l := range strings.Split(m[1], ",") {
+			if l = strings.TrimSpace(l); modelID.MatchString(l) {
+				levels = append(levels, l)
+			}
+		}
+		if len(levels) > 0 {
+			efforts = levels
+		}
+	}
+
+	var aliases []string
+	if m := claudeModelHelp.FindStringSubmatch(help); m != nil {
+		for _, q := range quoted.FindAllStringSubmatch(m[1], -1) {
+			aliases = append(aliases, q[1])
+		}
+	}
+	for _, known := range []string{"opus", "sonnet", "haiku"} {
+		if !slices.Contains(aliases, known) {
+			aliases = append(aliases, known)
+		}
+	}
+
+	var models []Model
+	for _, a := range aliases {
+		note := claudeAliasNote[a]
+		if note == "" {
+			note = "Claude " + a
+		}
+		models = append(models, Model{ID: a, Label: a + " — " + note + " (always the latest)", Efforts: efforts})
+	}
+	return models
+}
+
 // effortOrder sorts reasoning levels from lightest to heaviest.
 var effortOrder = map[string]int{"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
 
@@ -115,6 +170,7 @@ func parseCodexCache(b []byte) []Model {
 			Slug        string `json:"slug"`
 			DisplayName string `json:"display_name"`
 			Description string `json:"description"`
+			Visibility  string `json:"visibility"`
 			Levels      []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
@@ -125,6 +181,9 @@ func parseCodexCache(b []byte) []Model {
 	}
 	var models []Model
 	for _, m := range cache.Models {
+		if m.Visibility == "hide" {
+			continue // Codex hides these from its own model picker
+		}
 		label := m.Slug
 		if m.DisplayName != "" {
 			label += " — " + m.DisplayName
