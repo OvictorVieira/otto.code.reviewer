@@ -164,12 +164,12 @@ func chooseEngines(cfg *config.Config) error {
 	for _, name := range names {
 		spec := previous[name]
 		spec.Name = name
-		model, err := pickModel(name, spec.Model)
+		model, efforts, err := pickModel(name, spec.Model)
 		if err != nil {
 			return err
 		}
 		spec.Model = model
-		effort, err := pickEffort(name, model, spec.Effort)
+		effort, err := pickEffort(name, model, efforts, spec.Effort)
 		if err != nil {
 			return err
 		}
@@ -179,32 +179,56 @@ func chooseEngines(cfg *config.Config) error {
 	return nil
 }
 
-func pickModel(name, current string) (string, error) {
-	models := engine.Models(name)
+// pickModel shows the engine's live model list (searchable) and returns the
+// chosen model with the reasoning levels it accepts.
+func pickModel(name, current string) (string, []string, error) {
+	fmt.Printf("Loading %s models...\n", name)
+	catalog := engine.Catalog(name)
+
+	free := 0
 	options := []huh.Option[string]{huh.NewOption("CLI default", cliDefault)}
-	for _, m := range models {
-		options = append(options, huh.NewOption(m, m))
+	efforts := map[string][]string{cliDefault: engine.Efforts(name)}
+	known := false
+	for _, m := range catalog {
+		options = append(options, huh.NewOption(m.Label, m.ID))
+		efforts[m.ID] = m.Efforts
+		known = known || m.ID == current
+		if m.Free {
+			free++
+		}
 	}
-	if current != "" && !slices.Contains(models, current) {
-		options = append(options, huh.NewOption(current, current))
+	if current != "" && !known {
+		options = append(options, huh.NewOption(current+" (current)", current))
+		efforts[current] = engine.Efforts(name)
 	}
-	options = append(options, huh.NewOption("Type another model…", custom))
+	options = append(options, huh.NewOption("Type a model id…", custom))
+
+	title := fmt.Sprintf("%s: model", name)
+	switch {
+	case len(catalog) == 0:
+		title += " (the CLI did not list any; pick its default or type one)"
+	case free > 0:
+		title += fmt.Sprintf(" (%d available, %d free listed first · press / to search)", len(catalog), free)
+	default:
+		title += fmt.Sprintf(" (%d available · press / to search)", len(catalog))
+	}
 
 	model := current
-	if err := ask(huh.NewSelect[string]().Title(name + ": model").Options(options...).
-		Filtering(len(options) > 10).Height(min(len(options)+2, 16)).Value(&model)); err != nil {
-		return "", err
+	if err := ask(huh.NewSelect[string]().Title(title).Options(options...).
+		Height(min(len(options)+2, 18)).Value(&model)); err != nil {
+		return "", nil, err
 	}
 	if model != custom {
-		return model, nil
+		return model, efforts[model], nil
 	}
 	model = ""
-	err := ask(huh.NewInput().Title(name + ": model id").Value(&model))
-	return strings.TrimSpace(model), err
+	if err := ask(huh.NewInput().Title(name + ": model id").Value(&model)); err != nil {
+		return "", nil, err
+	}
+	return strings.TrimSpace(model), engine.Efforts(name), nil
 }
 
-func pickEffort(name, model, current string) (string, error) {
-	levels := engine.Efforts(name, model)
+func pickEffort(name, model string, levels []string, current string) (string, error) {
 	if len(levels) == 0 {
 		return "", nil
 	}
@@ -216,6 +240,10 @@ func pickEffort(name, model, current string) (string, error) {
 	if !slices.Contains(levels, effort) {
 		effort = cliDefault
 	}
-	err := ask(huh.NewSelect[string]().Title(name + ": reasoning effort").Options(options...).Value(&effort))
+	title := name + ": reasoning effort"
+	if model != "" {
+		title += " for " + model
+	}
+	err := ask(huh.NewSelect[string]().Title(title).Options(options...).Value(&effort))
 	return effort, err
 }

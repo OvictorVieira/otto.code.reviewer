@@ -2,101 +2,213 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
-// modelID matches CLI model identifiers such as "sonnet-4-thinking" or "gpt-5".
-var modelID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+// Model is one choice in the setup wizard. The lists are read from each CLI
+// at setup time, so new models show up without an Otto release.
+type Model struct {
+	ID      string
+	Label   string
+	Efforts []string // reasoning levels this model accepts; empty = none to pick
+	Free    bool
+}
 
-// Models lists the models the user can pick for an engine. An empty list
-// means "type it yourself"; the CLI default is always available too.
-func Models(name string) []string {
+// Catalog lists the models available to the user for an engine.
+func Catalog(name string) []Model {
 	switch name {
 	case "claude":
-		return []string{"opus", "sonnet", "haiku"}
+		efforts := claudeEfforts
+		return []Model{
+			{ID: "opus", Label: "opus — most capable Opus (always the latest)", Efforts: efforts},
+			{ID: "sonnet", Label: "sonnet — balanced Sonnet (always the latest)", Efforts: efforts},
+			{ID: "haiku", Label: "haiku — fastest Haiku (always the latest)", Efforts: efforts},
+		}
 	case "codex":
-		var slugs []string
-		for _, m := range codexModels() {
-			slugs = append(slugs, m.Slug)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
 		}
-		return slugs
+		b, err := os.ReadFile(filepath.Join(home, ".codex", "models_cache.json"))
+		if err != nil {
+			return nil
+		}
+		return parseCodexCache(b)
 	case "cursor":
-		out, err := exec.Command("cursor-agent", "--list-models").Output()
+		out, err := command(20*time.Second, "cursor-agent", "--list-models")
 		if err != nil {
 			return nil
 		}
-		var models []string
-		for _, line := range strings.Split(string(out), "\n") {
-			f := strings.Fields(strings.TrimLeft(line, "-* "))
-			if len(f) > 0 && modelID.MatchString(f[0]) {
-				models = append(models, f[0])
-			}
-		}
-		return models
+		return parseCursor(out)
 	case "opencode":
-		out, err := exec.Command("opencode", "models").Output()
+		out, err := command(60*time.Second, "opencode", "models", "--refresh", "--verbose")
 		if err != nil {
-			return nil
-		}
-		var models []string
-		for _, line := range strings.Split(string(out), "\n") {
-			if line = strings.TrimSpace(line); strings.Contains(line, "/") {
-				models = append(models, line)
+			if out, err = command(30*time.Second, "opencode", "models", "--verbose"); err != nil {
+				return nil
 			}
 		}
-		return models
+		return parseOpencode(out)
 	}
 	return nil
 }
 
-// Efforts lists the reasoning effort levels an engine (and model) accepts.
-func Efforts(name, model string) []string {
+// Efforts lists the default reasoning levels of an engine, used when the
+// model is the CLI default or was typed by hand.
+func Efforts(name string) []string {
 	switch name {
 	case "claude":
-		return []string{"low", "medium", "high", "xhigh", "max"}
+		return claudeEfforts
 	case "codex":
-		for _, m := range codexModels() {
-			if m.Slug == model && len(m.Levels) > 0 {
-				var levels []string
-				for _, l := range m.Levels {
-					levels = append(levels, l.Effort)
-				}
-				return levels
-			}
-		}
 		return []string{"minimal", "low", "medium", "high", "xhigh"}
 	case "opencode":
 		return []string{"minimal", "low", "medium", "high", "max"}
 	}
-	return nil
+	return nil // cursor: reasoning comes with the model name
 }
 
-type codexModel struct {
-	Slug   string `json:"slug"`
-	Levels []struct {
-		Effort string `json:"effort"`
-	} `json:"supported_reasoning_levels"`
+var claudeEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// effortOrder sorts reasoning levels from lightest to heaviest.
+var effortOrder = map[string]int{"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
+
+func sortEfforts(levels []string) []string {
+	sort.SliceStable(levels, func(i, j int) bool {
+		a, okA := effortOrder[levels[i]]
+		b, okB := effortOrder[levels[j]]
+		switch {
+		case okA && okB:
+			return a < b
+		case okA != okB:
+			return okA
+		default:
+			return levels[i] < levels[j]
+		}
+	})
+	return levels
 }
 
-// codexModels reads the model list the Codex CLI caches locally.
-func codexModels() []codexModel {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+func command(timeout time.Duration, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	done := make(chan struct{})
+	var out []byte
+	var err error
+	go func() { out, err = cmd.Output(); close(done) }()
+	select {
+	case <-done:
+		return string(out), err
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		return "", fmt.Errorf("%s timed out", name)
 	}
-	b, err := os.ReadFile(filepath.Join(home, ".codex", "models_cache.json"))
-	if err != nil {
-		return nil
-	}
+}
+
+func parseCodexCache(b []byte) []Model {
 	var cache struct {
-		Models []codexModel `json:"models"`
+		Models []struct {
+			Slug        string `json:"slug"`
+			DisplayName string `json:"display_name"`
+			Description string `json:"description"`
+			Levels      []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
 	}
 	if json.Unmarshal(b, &cache) != nil {
 		return nil
 	}
-	return cache.Models
+	var models []Model
+	for _, m := range cache.Models {
+		label := m.Slug
+		if m.DisplayName != "" {
+			label += " — " + m.DisplayName
+		}
+		if m.Description != "" {
+			label += " · " + m.Description
+		}
+		var efforts []string
+		for _, l := range m.Levels {
+			efforts = append(efforts, l.Effort)
+		}
+		models = append(models, Model{ID: m.Slug, Label: label, Efforts: efforts})
+	}
+	return models
+}
+
+// modelID matches CLI model identifiers such as "sonnet-4-thinking" or "gpt-5".
+var modelID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+func parseCursor(out string) []Model {
+	var models []Model
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(strings.TrimLeft(line, "-* "))
+		if len(f) > 0 && modelID.MatchString(f[0]) {
+			models = append(models, Model{ID: f[0], Label: strings.Join(f, " ")})
+		}
+	}
+	return models
+}
+
+// parseOpencode reads `opencode models --verbose`: a "provider/id" line
+// followed by that model's JSON. Free models come first, then paid ones.
+func parseOpencode(out string) []Model {
+	type entry struct {
+		ID         string `json:"id"`
+		ProviderID string `json:"providerID"`
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Cost       struct {
+			Input  float64 `json:"input"`
+			Output float64 `json:"output"`
+		} `json:"cost"`
+		Variants map[string]json.RawMessage `json:"variants"`
+	}
+
+	var models []Model
+	var block strings.Builder
+	depth := 0
+	for _, line := range strings.Split(out, "\n") {
+		if depth == 0 && !strings.HasPrefix(line, "{") {
+			continue // the "provider/id" header line
+		}
+		block.WriteString(line)
+		block.WriteByte('\n')
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+		if depth > 0 {
+			continue
+		}
+		var e entry
+		err := json.Unmarshal([]byte(block.String()), &e)
+		block.Reset()
+		depth = 0
+		if err != nil || e.ID == "" || e.Status == "deprecated" {
+			continue
+		}
+
+		m := Model{ID: e.ProviderID + "/" + e.ID, Free: e.Cost.Input == 0 && e.Cost.Output == 0}
+		price := "free"
+		if !m.Free {
+			price = fmt.Sprintf("$%g in / $%g out per 1M tokens", e.Cost.Input, e.Cost.Output)
+		}
+		m.Label = fmt.Sprintf("%s — %s · %s", m.ID, e.Name, price)
+		for v := range e.Variants {
+			m.Efforts = append(m.Efforts, v)
+		}
+		m.Efforts = sortEfforts(m.Efforts)
+		models = append(models, m)
+	}
+
+	sort.SliceStable(models, func(i, j int) bool {
+		if models[i].Free != models[j].Free {
+			return models[i].Free
+		}
+		return models[i].ID < models[j].ID
+	})
+	return models
 }
