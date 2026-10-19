@@ -1,0 +1,6 @@
+Otto
+Copyright 2026 Victor Hugo de Souza Vieira
+
+The review guidelines in internal/review/prompt.md are adapted from
+codex-rs/prompts/templates/review/rubric.md in OpenAI Codex
+(https://github.com/openai/codex), licensed under the Apache License 2.0.
