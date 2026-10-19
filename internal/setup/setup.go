@@ -7,8 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -18,7 +16,6 @@ import (
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
-	"github.com/OvictorVieira/otto.code.reviewer/internal/ghapp"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/picker"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/service"
@@ -55,18 +52,14 @@ type step struct {
 
 // Deps are the outside world the wizard talks to, replaceable in tests.
 type Deps struct {
-	Catalog     func(name string) []engine.Model
-	Efforts     func(name string) []string
-	Installed   func(name string) bool
-	ValidateApp func(ctx context.Context, id int64, keyPath string) (string, error)
+	Catalog   func(name string) []engine.Model
+	Efforts   func(name string) []string
+	Installed func(name string) bool
 }
 
 func defaultDeps() Deps {
 	return Deps{
 		Catalog: engine.Catalog, Efforts: engine.Efforts, Installed: engine.Installed,
-		ValidateApp: func(ctx context.Context, id int64, key string) (string, error) {
-			return (&ghapp.Client{AppID: id, KeyPath: key}).Validate(ctx)
-		},
 	}
 }
 
@@ -278,7 +271,7 @@ func (w *wizard) stepEngines() step {
 		}
 		m := picker.New(picker.Options{
 			Title: "Step 2 · Which AI engines can Otto use? (space selects, enter continues)",
-			Items: items, Multi: true, Checked: checked, Footer: "they run on your own subscriptions",
+			Items: items, Multi: true, Checked: checked, Footer: "they use your own accounts and plans",
 		})
 		return m, func(vals []string) *nested {
 			w.cfg.Engines = nil
@@ -302,7 +295,7 @@ func (w *wizard) engineSteps() []step {
 	if len(w.cfg.Engines) > 1 {
 		s = append(s, w.stepStrategy())
 	}
-	return append(s, w.stepVerify(), w.stepLanguage(), w.stepIdentity(), w.stepService())
+	return append(s, w.stepVerify(), w.stepLanguage(), w.stepService())
 }
 
 func (w *wizard) stepModel(i int) step {
@@ -431,78 +424,6 @@ func (w *wizard) stepLanguage() step {
 	}}
 }
 
-func (w *wizard) stepIdentity() step {
-	return step{show: func() (ui, func([]string) *nested) {
-		group := "Who posts a review asked for with " + w.cfg.Trigger
-		items := []picker.Item{
-			{Value: "user", Title: "As you", Hint: "reviews appear under your own GitHub account", Group: group},
-			{Value: "app", Title: "As Otto", Hint: "a GitHub App, shown as <name>[bot]; the command line still posts as you", Group: group},
-		}
-		cur := "user"
-		if w.cfg.App.ID != 0 {
-			cur = "app"
-		}
-		m := picker.New(picker.Options{Title: "Which identity answers /otto review on GitHub?", Items: items, Selected: cur, Footer: "README: Post as Otto"})
-		return m, func(vals []string) *nested {
-			if len(vals) == 0 || vals[0] == "user" {
-				w.cfg.App = config.GitHubApp{}
-				return nil
-			}
-			return w.askAppID()
-		}
-	}}
-}
-
-func (w *wizard) askAppID() *nested {
-	placeholder := "123456"
-	if w.cfg.App.ID != 0 {
-		placeholder = fmt.Sprint(w.cfg.App.ID)
-	}
-	return &nested{
-		ui: picker.NewInput("GitHub App ID (github.com/settings/apps → your app → About)", placeholder),
-		done: func(vals []string) *nested {
-			var id int64
-			if _, err := fmt.Sscan(vals[0], &id); err != nil || id <= 0 {
-				return w.problem(fmt.Sprintf("%q is not an app id. It is the number under About on the app's page.", vals[0]))
-			}
-			return w.askKey(id)
-		},
-	}
-}
-
-func (w *wizard) askKey(id int64) *nested {
-	placeholder := "~/.config/otto/otto.pem"
-	if w.cfg.App.KeyPath != "" {
-		placeholder = w.cfg.App.KeyPath
-	}
-	return &nested{
-		ui: picker.NewInput("Path of the app's private key (.pem)", placeholder),
-		done: func(vals []string) *nested {
-			key := expandHome(vals[0])
-			slug, err := w.deps.ValidateApp(context.Background(), id, key)
-			if err != nil {
-				return w.problem(err.Error())
-			}
-			w.cfg.App = config.GitHubApp{ID: id, KeyPath: key}
-			return &nested{ui: picker.NewNotice("Connected", "Otto will post as "+slug+"[bot]."), done: func([]string) *nested { return nil }}
-		},
-	}
-}
-
-// problem shows what went wrong and, on enter, asks for the app id again.
-func (w *wizard) problem(msg string) *nested {
-	return &nested{ui: picker.NewNotice("That did not work", msg), done: func([]string) *nested { return w.askAppID() }}
-}
-
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, p[2:])
-		}
-	}
-	return p
-}
-
 func (w *wizard) stepService() step {
 	return step{show: func() (ui, func([]string) *nested) {
 		items := []picker.Item{
@@ -558,11 +479,7 @@ func Run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintf(out, "  strategy   %s\n", w.cfg.Strategy)
 	}
 	fmt.Fprintf(out, "  verify     %v\n  language   %s\n", w.cfg.Verify, w.cfg.Language)
-	if w.cfg.App.ID != 0 {
-		fmt.Fprintf(out, "  posts as   GitHub App %d for `%s`\n", w.cfg.App.ID, w.cfg.Trigger)
-	} else {
-		fmt.Fprintf(out, "  posts as   you\n")
-	}
+	fmt.Fprintln(out, "  posts as   your GitHub account")
 	if w.service {
 		logPath, err := service.Install()
 		if err != nil {

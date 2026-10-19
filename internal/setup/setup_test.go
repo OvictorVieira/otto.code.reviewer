@@ -1,8 +1,6 @@
 package setup
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -30,12 +28,6 @@ func deps() Deps {
 		Catalog:   func(name string) []engine.Model { return catalogs[name] },
 		Efforts:   func(string) []string { return nil },
 		Installed: func(string) bool { return true },
-		ValidateApp: func(_ context.Context, id int64, key string) (string, error) {
-			if id != 5384980 {
-				return "", errors.New("GitHub rejected this app id and key")
-			}
-			return "otto-review", nil
-		},
 	}
 }
 
@@ -131,6 +123,23 @@ func TestSettingUpOnlyOpencodeNeverVisitsTheOtherEngines(t *testing.T) {
 	}
 }
 
+func TestCopilotCanBeSelectedWithDefaultModel(t *testing.T) {
+	d := start(t)
+	d.key(tea.KeyEnter) // repositories
+	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter)
+
+	if got := d.w.cfg.Engines; len(got) != 1 || got[0].Name != "copilot" {
+		t.Fatalf("engines = %+v, want only copilot", got)
+	}
+	if !strings.Contains(d.screen(), "copilot · select model") {
+		t.Fatalf("expected Copilot's model step:\n%s", d.screen())
+	}
+	d.key(tea.KeyEnter) // use Copilot CLI's configured default model
+	if !strings.Contains(d.screen(), "Should reviews run the project") {
+		t.Fatalf("Copilot's default model should proceed to review permissions:\n%s", d.screen())
+	}
+}
+
 func TestCopilotListsPremiumModelsAndAllowsTypingOtherIds(t *testing.T) {
 	d := start(t)
 	d.key(tea.KeyEnter) // repositories
@@ -209,51 +218,18 @@ func finishToIdentity(d *driver) {
 	d.key(tea.KeyEnter)                                        // language
 }
 
-func TestOttoIdentityIsValidatedAndSaved(t *testing.T) {
+func TestSetupNeverAsksForAGitHubAppForAnOrdinaryUser(t *testing.T) {
 	d := start(t)
 	finishToIdentity(d)
-	if !strings.Contains(d.screen(), "Which identity") {
-		t.Fatalf("expected the identity step:\n%s", d.screen())
-	}
-	d.key(tea.KeyDown, tea.KeyEnter) // As Otto
-	d.text("5384980")
-	d.key(tea.KeyEnter)
-	d.text("~/.config/otto/otto.pem")
-	d.key(tea.KeyEnter)
 
-	if !strings.Contains(d.screen(), "otto-review[bot]") {
-		t.Fatalf("expected the confirmation:\n%s", d.screen())
-	}
-	if d.w.cfg.App.ID != 5384980 || !strings.HasSuffix(d.w.cfg.App.KeyPath, "/.config/otto/otto.pem") || strings.HasPrefix(d.w.cfg.App.KeyPath, "~") {
-		t.Errorf("app = %+v (the path must have ~ expanded)", d.w.cfg.App)
-	}
-}
-
-func TestWrongAppIdShowsTheReasonAndAsksAgain(t *testing.T) {
-	d := start(t)
-	finishToIdentity(d)
-	d.key(tea.KeyDown, tea.KeyEnter)
-	d.text("42")
-	d.key(tea.KeyEnter)
-	d.text("/tmp/k.pem")
-	d.key(tea.KeyEnter)
-
-	if s := d.screen(); !strings.Contains(s, "did not work") || !strings.Contains(s, "rejected") {
-		t.Fatalf("the reason must be shown:\n%s", s)
-	}
-	if d.w.cfg.App.ID != 0 {
-		t.Error("nothing is saved for a failed validation")
-	}
-	d.key(tea.KeyEnter)
-	if !strings.Contains(d.screen(), "GitHub App ID") {
-		t.Errorf("after the notice it asks for the id again:\n%s", d.screen())
+	if s := d.screen(); strings.Contains(s, "App ID") || strings.Contains(s, "identity") || !strings.Contains(s, "background") {
+		t.Errorf("after the language step setup goes straight to the background service question:\n%s", s)
 	}
 }
 
 func TestFinishingTheLastStepEndsTheProgramAndKeepsEverything(t *testing.T) {
 	d := start(t)
 	finishToIdentity(d)
-	d.key(tea.KeyEnter) // identity: As you
 	d.key(tea.KeyEnter) // service: yes
 
 	if !d.w.finished || d.w.quit {

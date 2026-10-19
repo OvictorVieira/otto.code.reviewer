@@ -152,9 +152,10 @@ func relativePath(path, repoRoot string) string {
 
 // Placement says where each finding goes.
 type Placement struct {
-	Inline  []Finding // attached to a line in the diff
-	Outside []Finding // valid but outside the diff: listed in the summary
-	Dropped []Finding // below the confidence threshold
+	Inline         []Finding // attached to a line in the diff
+	Outside        []Finding // valid but outside the diff: listed in the summary
+	Dropped        []Finding // below the confidence threshold
+	InlineFallback bool      // inline comments were rejected by GitHub and moved to the summary
 }
 
 // Place keeps findings at or above minConfidence, attaches them to diff lines

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,30 @@ func TestLoadFillsDefaultsForMissingFields(t *testing.T) {
 	}
 	if c.Trigger != "/otto review" || c.Strategy != engine.RoundRobin || !c.Verify || c.Timeout != 30*time.Minute {
 		t.Errorf("defaults not applied: %+v", c)
+	}
+}
+
+func TestLoadIgnoresLegacyGitHubAppConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OTTO_HOME", dir)
+	legacy := []byte("engines:\n  - name: claude\ngithub_app:\n  id: 123\n  private_key: /tmp/otto.pem\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("legacy github_app field should be ignored: %v", err)
+	}
+
+	if _, err := Save(Default()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "github_app") {
+		t.Errorf("legacy github_app field persisted after save:\n%s", saved)
 	}
 }
 

@@ -331,26 +331,13 @@ worktree is deleted, and leftovers from a crash are swept on the next start.
   processes killed, worktree deleted
 ```
 
-## Post as Otto (optional)
+All reviews and follow-up comments are published using the GitHub account authenticated by `gh`, both for
+`otto review <pr-url>` and `/otto review`. Otto does not require a GitHub App or a separate bot identity; make
+sure your `gh` account has permission to review the repository.
 
-By default every review is posted under your own GitHub account. If you want reviews asked for with `/otto review`
-to appear as a separate identity (`otto[bot]`), give Otto a GitHub App:
-
-1. Open <https://github.com/settings/apps/new>. Name it (for example `otto-review-<you>`), put any URL as the homepage,
-   and untick **Webhook → Active**.
-2. Repository permissions: **Pull requests: Read & write**, **Issues: Read & write**, **Contents: Read-only**.
-3. Create the app, note its **App ID**, and under **Private keys** generate and download a `.pem` file.
-4. **Install App** on your account (all repositories, or the ones Otto watches).
-5. Run `otto setup`, pick **As Otto** at the identity step, and enter the App ID and the `.pem` path.
-   Setup checks them against GitHub before saving.
-
-| How the review is requested | Who posts it |
-| --- | --- |
-| Comment `/otto review` on GitHub | `otto[bot]`, with a "Requested by @you" line |
-| `otto review <pr-url>` in the terminal | you |
-
-If the app is not installed on a repository, Otto logs why and posts as you instead, so a review is never lost.
-In `config.yaml` this is `github_app: {id: 123456, private_key: ~/.config/otto/otto.pem}`.
+Findings on changed lines are posted as inline review comments on the affected file. Each finding includes a
+copyable prompt suggestion for a coding agent. If GitHub cannot anchor a finding to a changed line, Otto keeps
+the file and line reference and the prompt suggestion in the review summary.
 
 ## Updates
 

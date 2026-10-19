@@ -19,7 +19,6 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/diff"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/format"
-	"github.com/OvictorVieira/otto.code.reviewer/internal/ghapp"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
@@ -75,10 +74,6 @@ type App struct {
 	// it did. Restart then replaces the process with the new binary.
 	Upgrade func(ctx context.Context) (bool, error)
 	Restart func() error
-
-	// Bot returns a token that makes GitHub writes come from Otto's own
-	// identity for repo. Nil when no GitHub App is configured.
-	Bot func(ctx context.Context, repo string) (string, error)
 }
 
 // New loads config and state.
@@ -95,12 +90,8 @@ func New(out io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	var bot func(context.Context, string) (string, error)
-	if cfg.App.ID != 0 {
-		bot = (&ghapp.Client{AppID: cfg.App.ID, KeyPath: cfg.App.KeyPath}).TokenForRepo
-	}
 	return &App{
-		Cfg: cfg, State: st, Out: out, Bot: bot,
+		Cfg: cfg, State: st, Out: out,
 		Restart:   update.Restart,
 		Host:      github.CLI{},
 		Checkouts: gitCheckouts{},
@@ -118,8 +109,6 @@ type Options struct {
 	Engine           string       // run only this engine (no rotation)
 	DryRun           bool         // print instead of posting
 	Instructions     string       // extra focus from the requester
-	PostToken        string       // post as this identity instead of the user's gh login
-	Requester        string       // who asked, shown when posting as the bot
 	ShowProgress     bool         // use a transient manual-review display instead of progress log lines
 	PostQuotaFailure bool         // comment on a manual review when an engine reports an exhausted quota
 	Progress         func(string) // update the transient manual-review display
@@ -216,8 +205,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	if err != nil {
 		if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
 			a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
-			post := github.WithToken(ctx, opt.PostToken)
-			if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
+			if postErr := a.Host.Comment(ctx, repo, number, format.QuotaFailure(err)); postErr != nil {
 				return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
 			}
 		}
@@ -232,10 +220,6 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
 	spec := pool.spec(outcome.Index)
 	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger}
-	if opt.PostToken != "" {
-		meta.Requester = opt.Requester
-	}
-	post := github.WithToken(ctx, opt.PostToken)
 	payload := format.Payload(pr.HeadRefOid, placement, result, meta)
 	report := Report{Engine: spec.Name, Findings: len(placement.Inline) + len(placement.Outside)}
 
@@ -249,7 +233,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	}
 
 	a.reviewStatus(opt, fmt.Sprintf("%s#%d: posting review to GitHub", repo, number), "Publicando revisão no GitHub…")
-	if err := a.Host.PostReview(post, repo, number, payload); err != nil {
+	if err := a.Host.PostReview(ctx, repo, number, payload); err != nil {
 		if len(payload.Comments) == 0 {
 			return report, err
 		}
@@ -259,7 +243,8 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 			"Reformatando comentários para o GitHub…")
 		placement.Outside = append(placement.Inline, placement.Outside...)
 		placement.Inline = nil
-		if err := a.Host.PostReview(post, repo, number, format.Payload(pr.HeadRefOid, placement, result, meta)); err != nil {
+		placement.InlineFallback = true
+		if err := a.Host.PostReview(ctx, repo, number, format.Payload(pr.HeadRefOid, placement, result, meta)); err != nil {
 			return report, err
 		}
 	}
@@ -414,20 +399,9 @@ func (a *App) poll(ctx context.Context, repo string, allowed []string) {
 func (a *App) handle(ctx context.Context, req trigger.Request) {
 	a.logf("%s#%d: review requested by %s", req.Repo, req.PR, req.Author)
 
-	// A request made on GitHub is answered by Otto itself when a GitHub App is
-	// configured; a review run from the command line is always the user's own.
-	token := ""
-	if a.Bot != nil {
-		t, err := a.Bot(ctx, req.Repo)
-		if err != nil {
-			a.logf("%s#%d: posting as the Otto app is not possible, using your GitHub login: %v", req.Repo, req.PR, err)
-		}
-		token = t
-	}
-	write := github.WithToken(ctx, token)
-	_ = a.Host.React(write, req.Repo, req.CommentID, "eyes")
+	_ = a.Host.React(ctx, req.Repo, req.CommentID, "eyes")
 
-	report, err := a.Review(ctx, req.Repo, req.PR, Options{Instructions: req.Instructions, PostToken: token, Requester: req.Author})
+	report, err := a.Review(ctx, req.Repo, req.PR, Options{Instructions: req.Instructions})
 	if ctx.Err() != nil {
 		return // shutting down: leave it unmarked so it runs again on restart
 	}
@@ -436,13 +410,13 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 
 	if err != nil {
 		a.logf("%s#%d: review failed: %v", req.Repo, req.PR, err)
-		_ = a.Host.React(write, req.Repo, req.CommentID, "confused")
-		_ = a.Host.Comment(write, req.Repo, req.PR, fmt.Sprintf(
+		_ = a.Host.React(ctx, req.Repo, req.CommentID, "confused")
+		_ = a.Host.Comment(ctx, req.Repo, req.PR, fmt.Sprintf(
 			"Otto could not finish this review.\n\n```\n%s\n```\n\nComment `%s` to try again.", trim(err.Error(), 1500), a.Cfg.Trigger))
 		return
 	}
 	if report.Findings == 0 {
-		_ = a.Host.React(write, req.Repo, req.CommentID, "+1")
+		_ = a.Host.React(ctx, req.Repo, req.CommentID, "+1")
 	}
 }
 

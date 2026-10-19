@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,26 +24,8 @@ type PR struct {
 	HeadRefOid  string `json:"headRefOid"`
 }
 
-type tokenKey struct{}
-
-// WithToken makes every gh call made with the returned context act as the
-// holder of token (for example a GitHub App installation) instead of the
-// user's own `gh` login.
-func WithToken(ctx context.Context, token string) context.Context {
-	return context.WithValue(ctx, tokenKey{}, token)
-}
-
-// TokenFrom returns the token set by WithToken, or "" for the user's own login.
-func TokenFrom(ctx context.Context) string {
-	t, _ := ctx.Value(tokenKey{}).(string)
-	return t
-}
-
 func gh(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	if tok := TokenFrom(ctx); tok != "" {
-		cmd.Env = append(os.Environ(), "GH_TOKEN="+tok)
-	}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}

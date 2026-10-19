@@ -42,11 +42,12 @@ type reaction struct {
 	content   string
 }
 
-// identity records which GitHub identity ("" = the user's own gh login) made a write.
 type write struct {
 	what string
 	as   string
 }
+
+type testGitHubIdentityKey struct{}
 
 type fakeHost struct {
 	mu          sync.Mutex
@@ -68,7 +69,7 @@ func (h *fakeHost) Repos(context.Context) ([]string, error)           { return [
 func (h *fakeHost) PostReview(ctx context.Context, _ string, _ int, payload any) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.writes = append(h.writes, write{"review", github.TokenFrom(ctx)})
+	h.writes = append(h.writes, write{"review", testIdentity(ctx)})
 	r := payload.(format.Review)
 	if h.rejectFirst && len(r.Comments) > 0 {
 		h.rejectFirst = false
@@ -78,14 +79,18 @@ func (h *fakeHost) PostReview(ctx context.Context, _ string, _ int, payload any)
 	return nil
 }
 func (h *fakeHost) Comment(ctx context.Context, _ string, _ int, body string) error {
-	h.writes = append(h.writes, write{"comment", github.TokenFrom(ctx)})
+	h.writes = append(h.writes, write{"comment", testIdentity(ctx)})
 	h.plain = append(h.plain, body)
 	return nil
 }
 func (h *fakeHost) React(ctx context.Context, _ string, id int64, content string) error {
-	h.writes = append(h.writes, write{"react", github.TokenFrom(ctx)})
+	h.writes = append(h.writes, write{"react", testIdentity(ctx)})
 	h.reactions = append(h.reactions, reaction{id, content})
 	return nil
+}
+func testIdentity(ctx context.Context) string {
+	identity, _ := ctx.Value(testGitHubIdentityKey{}).(string)
+	return identity
 }
 func (h *fakeHost) CommentsSince(context.Context, string, time.Time) ([]trigger.Comment, error) {
 	return h.comments, nil
@@ -214,7 +219,8 @@ func TestReviewMovesFindingsToSummaryWhenGitHubRejectsInlineComments(t *testing.
 		t.Fatalf("posted %d reviews, want 1 retry", len(h.host.posted))
 	}
 	r := h.host.posted[0]
-	if len(r.Comments) != 0 || !strings.Contains(r.Body, "Findings outside the diff") || !strings.Contains(r.Body, "Reserve stock atomically") {
+	if len(r.Comments) != 0 || !strings.Contains(r.Body, "Findings not attached inline") ||
+		!strings.Contains(r.Body, "`stock.go:2`") || !strings.Contains(r.Body, "Suggested prompt for a coding agent") {
 		t.Errorf("retry should list the finding in the summary:\n%s", r.Body)
 	}
 }
@@ -491,12 +497,6 @@ func TestWatchCarriesOnWhenAlreadyUpToDateOrUpdateFails(t *testing.T) {
 	}
 }
 
-// ---- Who posts ------------------------------------------------------------
-
-func (h *harness) withBot(token string, err error) {
-	h.app.Bot = func(context.Context, string) (string, error) { return token, err }
-}
-
 func identities(h *harness) map[string]string {
 	out := map[string]string{}
 	for _, w := range h.host.writes {
@@ -505,77 +505,46 @@ func identities(h *harness) map[string]string {
 	return out
 }
 
-func TestTriggerFromGitHubIsAnsweredAsTheBot(t *testing.T) {
+func TestTriggerFromGitHubIsAnsweredAsTheLoggedInUser(t *testing.T) {
 	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
-	h.withBot("bot-token", nil)
 	h.host.comments = []trigger.Comment{triggerComment(30, "OvictorVieira")}
 
-	if err := h.app.Watch(context.Background(), true); err != nil {
+	ctx := context.WithValue(context.Background(), testGitHubIdentityKey{}, "logged-in-user")
+	if err := h.app.Watch(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := identities(h); got["review"] != "bot-token" || got["react"] != "bot-token" {
-		t.Errorf("review and reactions must come from the bot, got %v", got)
+	if got := identities(h); got["review"] != "logged-in-user" || got["react"] != "logged-in-user" {
+		t.Errorf("review and reactions must use the logged-in user's auth, got %v", got)
 	}
-	if !strings.Contains(h.host.posted[0].Body, "**Requested by:** @OvictorVieira") {
-		t.Errorf("a bot review must say who asked for it:\n%s", h.host.posted[0].Body)
+	if strings.Contains(h.host.posted[0].Body, "Requested by") {
+		t.Errorf("review posted by the requester must not add bot attribution:\n%s", h.host.posted[0].Body)
 	}
 }
 
-func TestBotFailureComplaintIsAlsoPostedAsTheBot(t *testing.T) {
+func TestTriggerFailureCommentUsesTheLoggedInUser(t *testing.T) {
 	h := newHarness(t, fakeEngine{name: "claude", err: errors.New("usage limit")})
-	h.withBot("bot-token", nil)
 	h.host.comments = []trigger.Comment{triggerComment(31, "OvictorVieira")}
+	ctx := context.WithValue(context.Background(), testGitHubIdentityKey{}, "logged-in-user")
 
-	_ = h.app.Watch(context.Background(), true)
+	_ = h.app.Watch(ctx, true)
 
-	if got := identities(h); got["comment"] != "bot-token" {
-		t.Errorf("failure comment identity = %q, want the bot", got["comment"])
+	if got := identities(h); got["comment"] != "logged-in-user" {
+		t.Errorf("failure comment identity = %q, want the logged-in user", got["comment"])
 	}
 }
 
-func TestCommandLineReviewIsPostedAsTheUserEvenWhenABotIsConfigured(t *testing.T) {
+func TestCommandLineReviewDoesNotAddBotAttribution(t *testing.T) {
 	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
-	h.withBot("bot-token", nil)
 
 	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
 		t.Fatal(err)
 	}
 
 	if got := identities(h); got["review"] != "" {
-		t.Errorf("a command-line review is posted as the user, got token %q", got["review"])
+		t.Errorf("command-line review must not switch the user's identity, got %q", got["review"])
 	}
 	if strings.Contains(h.host.posted[0].Body, "Requested by") {
 		t.Error("the user's own review needs no 'requested by' line")
-	}
-}
-
-func TestWithoutABotTheTriggerIsAnsweredAsTheUser(t *testing.T) {
-	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2}) // no Bot configured
-	h.host.comments = []trigger.Comment{triggerComment(32, "OvictorVieira")}
-
-	if err := h.app.Watch(context.Background(), true); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := identities(h); got["review"] != "" || len(h.host.posted) != 1 {
-		t.Errorf("identities = %v, posted %d", got, len(h.host.posted))
-	}
-}
-
-func TestBotUnavailableFallsBackToTheUserAndStillReviews(t *testing.T) {
-	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
-	h.withBot("", errors.New("the Otto GitHub App is not installed on acme/api"))
-	h.host.comments = []trigger.Comment{triggerComment(33, "OvictorVieira")}
-
-	if err := h.app.Watch(context.Background(), true); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(h.host.posted) != 1 || identities(h)["review"] != "" {
-		t.Errorf("review should still be posted as the user: %v", identities(h))
-	}
-	if !strings.Contains(h.out.String(), "not installed") {
-		t.Errorf("the reason must be logged:\n%s", h.out)
 	}
 }

@@ -14,10 +14,17 @@ func TestInlineBodyMatchesCodexLayout(t *testing.T) {
 		Priority: 2,
 		Title:    "Derive the default overlap from maxChars",
 		Body:     "When a caller sets only `maxChars`, the default overlap fails.",
+		Path:     "internal/cache.go",
+		Start:    12,
+		End:      14,
 	}
 	want := "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Derive the default overlap from maxChars**\n" +
 		"\n" +
 		"When a caller sets only `maxChars`, the default overlap fails.\n" +
+		"\n" +
+		"**Suggested prompt for a coding agent**\n\n" +
+		"> In `internal/cache.go` at lines 12-14, fix this review finding: Derive the default overlap from maxChars. Context: When a caller sets only `maxChars`, the default overlap fails. " +
+		"Inspect the surrounding code and repository instructions, make the smallest correct change, add or update a regression test, and run the relevant checks. Preserve unrelated behavior.\n" +
 		"\n" +
 		"Useful? React with 👍 / 👎.\n" +
 		"\n" +
@@ -95,11 +102,31 @@ func TestSummaryListsVerdictCommitAndFindingsOutsideDiff(t *testing.T) {
 		"A secret leaks to logs.",
 		"Token logged",
 		"`auth.go:40`",
+		"Suggested prompt for a coding agent",
+		"In `auth.go` at line 40, fix this review finding",
 		"/otto review",
 		"<!-- otto-review-receipt:v1 -->",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary missing %q\n%s", want, s)
+		}
+	}
+}
+
+func TestSummaryExplainsInlineFallbackAndKeepsFileLocation(t *testing.T) {
+	p := review.Placement{
+		Outside:        []review.Finding{{Title: "Finding", Body: "Details.", Path: "src/file.go", Start: 23, End: 23}},
+		InlineFallback: true,
+	}
+	s := Summary("abc1234567890", p, review.Result{}, Meta{Engine: "claude"})
+	for _, want := range []string{
+		"Findings not attached inline",
+		"GitHub could not attach these findings to changed lines",
+		"`src/file.go:23`",
+		"In `src/file.go` at line 23, fix this review finding",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("summary missing %q:\n%s", want, s)
 		}
 	}
 }

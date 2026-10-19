@@ -19,20 +19,12 @@ type Repos struct {
 	Selected []string `yaml:"selected"`
 }
 
-// GitHubApp is Otto's own GitHub identity (otto[bot]). When set, reviews asked
-// for with the trigger comment are posted by the app instead of by the user.
-type GitHubApp struct {
-	ID      int64  `yaml:"id"`
-	KeyPath string `yaml:"private_key"`
-}
-
 // Config is the user's Otto setup.
 type Config struct {
 	Trigger        string          `yaml:"trigger"`
 	Language       string          `yaml:"language"`
 	AllowedAuthors []string        `yaml:"allowed_authors"`
 	Repos          Repos           `yaml:"repos"`
-	App            GitHubApp       `yaml:"github_app,omitempty"`
 	Strategy       engine.Strategy `yaml:"strategy"`
 	Engines        []engine.Spec   `yaml:"engines"`
 	Verify         bool            `yaml:"verify"`

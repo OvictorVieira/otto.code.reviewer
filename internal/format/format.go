@@ -30,9 +30,6 @@ type Meta struct {
 	Model   string
 	Effort  string
 	Trigger string // defaults to "/otto review"
-	// Requester is who asked for the review. It is shown only when Otto posts
-	// as its own identity; a review posted as the user needs no attribution.
-	Requester string
 }
 
 // Badge returns the small colored severity badge.
@@ -46,8 +43,26 @@ func Badge(priority int) string {
 
 // InlineBody is the markdown of one inline comment.
 func InlineBody(f review.Finding) string {
-	return fmt.Sprintf("**%s  %s**\n\n%s\n\nUseful? React with 👍 / 👎.\n\n<!-- otto-review-finding:v1 -->",
-		Badge(f.Priority), f.Title, f.Body)
+	return fmt.Sprintf("**%s  %s**\n\n%s\n\n%s\n\nUseful? React with 👍 / 👎.\n\n<!-- otto-review-finding:v1 -->",
+		Badge(f.Priority), f.Title, f.Body, agentPromptBlock(f))
+}
+
+func agentPromptBlock(f review.Finding) string {
+	prompt := fmt.Sprintf("In `%s` at %s, fix this review finding: %s. Context: %s "+
+		"Inspect the surrounding code and repository instructions, make the smallest correct change, add or update a regression test, and run the relevant checks. Preserve unrelated behavior.",
+		f.Path, lineLabel(f), f.Title, strings.TrimSpace(f.Body))
+	lines := strings.Split(prompt, "\n")
+	for i := range lines {
+		lines[i] = "> " + lines[i]
+	}
+	return "**Suggested prompt for a coding agent**\n\n" + strings.Join(lines, "\n")
+}
+
+func lineLabel(f review.Finding) string {
+	if f.Start == f.End {
+		return fmt.Sprintf("line %d", f.Start)
+	}
+	return fmt.Sprintf("lines %d-%d", f.Start, f.End)
 }
 
 // Comment is one inline comment in the GitHub "create review" payload.
@@ -105,9 +120,6 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 	fmt.Fprintf(&b, "**Reviewed commit:** `%s`\n", short(commitSHA))
 	b.WriteString("\n<details> <summary>ℹ️ About Otto in GitHub</summary>\n<br/>\n\n")
 	fmt.Fprintf(&b, "**Engine:** %s\n", engineLabel(m))
-	if m.Requester != "" {
-		fmt.Fprintf(&b, "**Requested by:** @%s\n", m.Requester)
-	}
 	verdict := "patch is correct"
 	if !r.Correct {
 		verdict = "patch is incorrect"
@@ -133,9 +145,17 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 	}
 
 	if len(p.Outside) > 0 {
-		b.WriteString("\n#### Findings outside the diff\n\n")
+		heading := "Findings outside the diff"
+		if p.InlineFallback {
+			heading = "Findings not attached inline"
+			b.WriteString("\n#### " + heading + "\n\n")
+			b.WriteString("GitHub could not attach these findings to changed lines; the affected file and line are shown below.\n\n")
+		} else {
+			b.WriteString("\n#### " + heading + "\n\n")
+		}
 		for _, f := range p.Outside {
 			fmt.Fprintf(&b, "- %s **%s** (`%s:%d`)\n  %s\n", Badge(f.Priority), f.Title, f.Path, f.Start, f.Body)
+			fmt.Fprintf(&b, "\n%s\n\n", agentPromptBlock(f))
 		}
 	}
 
