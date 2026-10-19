@@ -260,13 +260,7 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 			line, readErr := reader.ReadString('\n')
 			if line != "" {
 				dst.WriteString(line)
-				if isStderr {
-					if isQuotaMessage(line) {
-						cancelForQuota(line)
-					}
-					continue
-				}
-				if c.Bin == "copilot" {
+				if !isStderr && c.Bin == "copilot" {
 					message, quota := copilotEvent(line, c.Dir)
 					if message != "" {
 						emit(message)
@@ -388,7 +382,7 @@ func isQuotaMessage(s string) bool {
 	for _, marker := range []string{
 		"rate limit exceeded", "rate_limit_exceeded", "quota exceeded", "quota_exceeded",
 		"premium request limit", "premium request quota", "out of premium requests",
-		"usage limit reached", "monthly quota exhausted", "monthly request limit", "too many requests",
+		"usage limit reached", "monthly quota exhausted", "monthly request limit", "429 too many requests",
 		"status code 429", "http 429", "error 429",
 	} {
 		if strings.Contains(s, marker) {

@@ -43,7 +43,7 @@ func Badge(priority int) string {
 
 // InlineBody is the markdown of one inline comment.
 func InlineBody(f review.Finding) string {
-	return fmt.Sprintf("**%s  %s**\n\n%s\n\n%s\n\nUseful? React with 👍 / 👎.\n\n<!-- otto-review-finding:v1 -->",
+	return fmt.Sprintf("**%s  %s**\n\n%s\n\n%s\n\n<!-- otto-review-finding:v1 -->",
 		Badge(f.Priority), f.Title, f.Body, agentPromptBlock(f))
 }
 

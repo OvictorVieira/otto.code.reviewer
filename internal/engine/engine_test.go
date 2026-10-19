@@ -3,6 +3,9 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -139,6 +142,36 @@ func TestCopilotQuotaErrorIsRecognized(t *testing.T) {
 	}
 	if !isQuotaMessage("HTTP 429 Too Many Requests") {
 		t.Error("HTTP 429 must be recognized as quota exhaustion")
+	}
+}
+
+func TestCodeExampleMentioning429IsNotQuotaExhaustion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a Unix executable fixture")
+	}
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "codex")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	runCodex := func(output string) error {
+		t.Helper()
+		script := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\nexit 1\n"
+		if err := os.WriteFile(codex, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := (CLI{Spec: Spec{Name: "codex"}}).Run(context.Background(), Request{
+			Dir: dir, OutFile: filepath.Join(dir, "answer.txt"),
+		})
+		return err
+	}
+
+	err := runCodex(`-      return c.json({ error: "Too many requests" }, 429);`)
+	if err == nil || errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("Codex code excerpt must remain a CLI failure, not quota exhaustion; error = %v", err)
+	}
+	err = runCodex("HTTP 429 Too Many Requests")
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("explicit HTTP 429 response must be classified as quota exhaustion; error = %v", err)
 	}
 }
 

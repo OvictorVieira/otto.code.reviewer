@@ -26,8 +26,6 @@ func TestInlineBodyMatchesCodexLayout(t *testing.T) {
 		"> In `internal/cache.go` at lines 12-14, fix this review finding: Derive the default overlap from maxChars. Context: When a caller sets only `maxChars`, the default overlap fails. " +
 		"Inspect the surrounding code and repository instructions, make the smallest correct change, add or update a regression test, and run the relevant checks. Preserve unrelated behavior.\n" +
 		"\n" +
-		"Useful? React with 👍 / 👎.\n" +
-		"\n" +
 		"<!-- otto-review-finding:v1 -->"
 	if got := InlineBody(f); got != want {
 		t.Errorf("InlineBody mismatch\n got: %q\nwant: %q", got, want)
