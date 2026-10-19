@@ -13,6 +13,7 @@ import (
 
 var catalogs = map[string][]engine.Model{
 	"claude": {{ID: "sonnet", Name: "sonnet", Group: "Claude", Efforts: []string{"low", "high"}}},
+	"codex":  {{ID: "gpt-5.5", Name: "GPT-5.5", Group: "OpenAI", Efforts: []string{"low", "medium", "high"}}},
 	"opencode": {
 		{ID: "opencode/beam-free", Name: "Beam Free", Group: "Free", Tag: "Free", Free: true, Efforts: []string{"low", "high"}},
 		{ID: "opencode/big-pickle", Name: "Big Pickle", Group: "Free", Tag: "Free", Free: true}, // no effort levels
@@ -41,6 +42,11 @@ type driver struct {
 func start(t *testing.T) *driver {
 	t.Helper()
 	cfg := config.Default()
+	return startWithConfig(t, cfg)
+}
+
+func startWithConfig(t *testing.T, cfg config.Config) *driver {
+	t.Helper()
 	w := newWizard(deps(), cfg, []string{"acme/api", "acme/web", "me/notes"})
 	w.spin.Spinner.FPS = time.Millisecond // do not wait 100ms per frame in tests
 	d := &driver{t: t, w: w}
@@ -110,7 +116,7 @@ func TestSettingUpOnlyOpencodeNeverVisitsTheOtherEngines(t *testing.T) {
 	// because claude was pre-checked and enter only confirmed the checked ones.
 	d := start(t)
 	d.key(tea.KeyEnter) // step 1: repos, enter picks the cursor item ("All repositories")
-	if !strings.Contains(d.screen(), "Which AI engines") {
+	if !strings.Contains(d.screen(), "Choose your primary AI engine") {
 		t.Fatalf("expected the engines step:\n%s", d.screen())
 	}
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter) // claude, codex, cursor, opencode
@@ -120,6 +126,23 @@ func TestSettingUpOnlyOpencodeNeverVisitsTheOtherEngines(t *testing.T) {
 	}
 	if s := d.screen(); !strings.Contains(s, "opencode · select model") || strings.Contains(s, "claude · select") {
 		t.Errorf("the next screen must be opencode's model list:\n%s", s)
+	}
+}
+
+func TestChangingConfiguredEngineReplacesItAndLoadsNewProviderModels(t *testing.T) {
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "opencode", Model: "opencode/beam-free"}}
+	d := startWithConfig(t, cfg)
+	d.key(tea.KeyEnter) // repositories
+	d.text("codex")
+	d.key(tea.KeyEnter)
+
+	if got := d.w.cfg.Engines; len(got) != 1 || got[0].Name != "codex" {
+		t.Fatalf("engines = %+v, want only codex", got)
+	}
+	if screen := d.screen(); !strings.Contains(screen, "codex · select model") ||
+		!strings.Contains(screen, "GPT-5.5") || strings.Contains(screen, "Beam Free") {
+		t.Fatalf("the selected engine's model picker should load Codex models:\n%s", screen)
 	}
 }
 
@@ -201,12 +224,21 @@ func TestEscGoesBackOneStepAndKeepsTheEarlierChoices(t *testing.T) {
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter) // opencode
 	d.key(tea.KeyEsc)                                          // back to engines
 
-	if !strings.Contains(d.screen(), "Which AI engines") {
+	if !strings.Contains(d.screen(), "Choose your primary AI engine") {
 		t.Fatalf("esc should return to the engines step:\n%s", d.screen())
 	}
 	d.key(tea.KeyEsc) // back to repos
 	if !strings.Contains(d.screen(), "Which repositories") || !d.w.cfg.Repos.All {
 		t.Errorf("repos choice must be kept:\n%s", d.screen())
+	}
+}
+
+func TestEscOnFirstSetupScreenExitsSetup(t *testing.T) {
+	d := start(t)
+	d.key(tea.KeyEsc)
+
+	if !d.w.quit || d.w.finished {
+		t.Fatalf("Esc on the first setup screen should exit without saving; quit=%v finished=%v", d.w.quit, d.w.finished)
 	}
 }
 

@@ -54,9 +54,11 @@ esac
 uninstall() {
 	say "Uninstalling Otto"
 	plist="$HOME/Library/LaunchAgents/$LABEL.plist"
-	if [ "$OS" = darwin ] && [ -f "$plist" ]; then
+	monitor_plist="$HOME/Library/LaunchAgents/$LABEL.monitor.plist"
+	if [ "$OS" = darwin ] && { [ -f "$plist" ] || [ -f "$monitor_plist" ]; }; then
 		launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
-		rm -f "$plist"
+		launchctl bootout "gui/$(id -u)" "$monitor_plist" 2>/dev/null || true
+		rm -f "$plist" "$monitor_plist"
 		ok "background service removed"
 	fi
 	for bin in "$INSTALL_DIR/otto" "$(command -v otto 2>/dev/null || true)"; do

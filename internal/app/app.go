@@ -211,7 +211,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		}
 		return Report{}, err
 	}
-	if opt.Engine == "" {
+	if opt.Engine == "" && pool.Strategy != engine.Priority {
 		a.State.Rotation = outcome.Next
 		_ = a.State.Save()
 	}
@@ -277,10 +277,34 @@ type pool struct {
 
 func (p pool) spec(i int) engine.Spec { return p.specs[i] }
 
+func automaticFallbacks(primary engine.Spec) []engine.Spec {
+	specs := []engine.Spec{primary}
+	start := -1
+	for i, name := range engine.Known {
+		if name == primary.Name {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return specs
+	}
+	for offset := 1; offset < len(engine.Known); offset++ {
+		name := engine.Known[(start+offset)%len(engine.Known)]
+		specs = append(specs, engine.Spec{Name: name})
+	}
+	return specs
+}
+
 func (a *App) pool(only string, opt Options) (pool, error) {
 	var p pool
 	p.Strategy = a.Cfg.Strategy
-	for _, s := range a.Cfg.Engines {
+	specs := a.Cfg.Engines
+	if only == "" && len(specs) == 1 {
+		specs = automaticFallbacks(specs[0])
+		p.Strategy = engine.Priority
+	}
+	for _, s := range specs {
 		if only != "" && s.Name != only {
 			continue
 		}

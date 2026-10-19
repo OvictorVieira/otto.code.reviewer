@@ -311,6 +311,46 @@ func TestRotationAdvancesBetweenReviewsButNotForExplicitEngine(t *testing.T) {
 	}
 }
 
+func TestSinglePrimaryFallsBackToNearestAvailableEngine(t *testing.T) {
+	var calls []string
+	h := newHarness(t, fakeEngine{name: "codex", err: errors.New("not logged in"), callLog: &calls})
+	h.app.Cfg.Engines = []engine.Spec{{Name: "codex"}}
+	h.app.Installed = func(name string) bool {
+		return name == "codex" || name == "cursor" || name == "opencode"
+	}
+	h.app.NewEngine = func(spec engine.Spec) engine.Engine {
+		switch spec.Name {
+		case "codex":
+			return fakeEngine{name: spec.Name, err: errors.New("not logged in"), callLog: &calls}
+		case "cursor":
+			return fakeEngine{name: spec.Name, answer: "ok", callLog: &calls}
+		default:
+			return fakeEngine{name: spec.Name, err: errors.New("not logged in"), callLog: &calls}
+		}
+	}
+
+	p, err := h.app.pool("", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Strategy != engine.Priority || len(p.specs) != 3 ||
+		p.specs[0].Name != "codex" || p.specs[1].Name != "cursor" || p.specs[2].Name != "opencode" {
+		t.Fatalf("fallback order = %+v (strategy %s), want codex → cursor → opencode with priority", p.specs, p.Strategy)
+	}
+	outcome, err := p.Run(context.Background(), engine.Request{}, 0, func(answer string) error {
+		if answer != "ok" {
+			return errors.New("invalid answer")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(calls, ",") != "codex,cursor" || outcome.Engine != "cursor" {
+		t.Errorf("calls = %v, successful fallback = %s", calls, outcome.Engine)
+	}
+}
+
 func TestDryRunPrintsInsteadOfPosting(t *testing.T) {
 	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
 

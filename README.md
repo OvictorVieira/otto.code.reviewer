@@ -10,8 +10,8 @@ Comment `/otto review` on a pull request. Otto checks the branch out, has your a
 probe the edge cases, then posts the review as you: colored `P0`–`P3` findings on the exact lines, a verdict,
 and what it actually verified.
 
-It works with **Claude Code**, **Codex**, **Cursor**, **OpenCode** and **GitHub Copilot CLI**. Use one, or rotate between them so no single
-plan hits its limit, with automatic fallback when one fails.
+It works with **Claude Code**, **Codex**, **Cursor**, **OpenCode** and **GitHub Copilot CLI**. Choose one primary engine;
+Otto automatically falls back to the next installed engines if it fails.
 
 ## Installation (60-second setup)
 
@@ -95,12 +95,13 @@ returned by the provider if all engines fail; it never guesses a reset time.
 The installer starts it for you. It asks:
 
 - which repositories to watch: pick from a checklist, or watch all of them (new ones included)
-- which engines to use, and the model and effort for each
-- whether to rotate between engines or always start with the first
+- one primary engine, and its model and effort
+- automatic fallback to the next installed engines if the primary fails
 - whether reviews may run the project (install, test, start), or only read the code
 - the trigger phrase and the language of the comments
 
-It can then install Otto as a background service that starts at login.
+It can then install Otto as a background service that starts at login. On macOS, a separate health check runs every
+five minutes and restarts the watcher if it is no longer active.
 
 ### 4. Bam. Comment `/otto review` on a pull request.
 
@@ -170,6 +171,7 @@ concise log output.
 
 ```bash
 otto service status      # is the background watcher running?
+otto service ensure      # start it if it is not active
 otto service uninstall   # stop it
 otto clean               # delete cached clones and worktrees
 tail -f ~/Library/Logs/otto.log

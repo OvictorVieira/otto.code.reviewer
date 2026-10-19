@@ -34,7 +34,7 @@ Usage:
       --dry-run                       print the review instead of posting it
       --focus "text"                  extra instructions for the reviewer
   otto watch [--once]                 poll repositories and answer the trigger comment
-  otto service install|uninstall|status
+  otto service install|uninstall|status|ensure
   otto update                         check GitHub and install the latest release
   otto clean                          delete cached clones and worktrees
   otto version
@@ -174,8 +174,15 @@ func serviceCmd(args []string) error {
 		} else {
 			fmt.Println("not running")
 		}
+	case "ensure":
+		if err := service.Ensure(); err != nil {
+			return err
+		}
+		fmt.Println("Watcher is running.")
+	case "monitor":
+		return service.Ensure()
 	default:
-		return fmt.Errorf("usage: otto service install|uninstall|status")
+		return fmt.Errorf("usage: otto service install|uninstall|status|ensure")
 	}
 	return nil
 }

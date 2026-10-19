@@ -182,6 +182,10 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if w.nested {
 			return w, w.display() // rebuild the step the nested screen came from
 		}
+		if w.i == 0 {
+			w.quit = true
+			return w, tea.Quit
+		}
 		return w, w.advance(-1)
 	case picker.Picked:
 		if w.curDone != nil {
@@ -258,20 +262,21 @@ func (w *wizard) stepRepos() step {
 func (w *wizard) stepEngines() step {
 	return step{show: func() (ui, func([]string) *nested) {
 		var items []picker.Item
-		var checked []string
+		selected := ""
+		if len(w.cfg.Engines) > 0 {
+			selected = w.cfg.Engines[0].Name
+		}
 		for _, name := range engine.Known {
 			tag := ""
 			if !w.deps.Installed(name) {
 				tag = "not installed"
 			}
 			items = append(items, picker.Item{Value: name, Title: name, Group: "AI engines", Tag: tag})
-			if _, was := w.previous[name]; was {
-				checked = append(checked, name)
-			}
 		}
 		m := picker.New(picker.Options{
-			Title: "Step 2 · Which AI engines can Otto use? (space selects, enter continues)",
-			Items: items, Multi: true, Checked: checked, Footer: "they use your own accounts and plans",
+			Title: "Step 2 · Choose your primary AI engine",
+			Items: items, Selected: selected,
+			Footer: "Otto tries the next installed engines if this one fails",
 		})
 		return m, func(vals []string) *nested {
 			w.cfg.Engines = nil
@@ -291,9 +296,6 @@ func (w *wizard) engineSteps() []step {
 	var s []step
 	for i := range w.cfg.Engines {
 		s = append(s, w.stepModel(i), w.stepEffort(i))
-	}
-	if len(w.cfg.Engines) > 1 {
-		s = append(s, w.stepStrategy())
 	}
 	return append(s, w.stepVerify(), w.stepLanguage(), w.stepService())
 }
@@ -386,17 +388,6 @@ func (w *wizard) stepEffort(i int) step {
 		}
 		return choice(fmt.Sprintf("%s · select effort for %s", spec.Name, orDefault(spec.Model)), items, current,
 			fmt.Sprintf("%d levels", len(levels)), func(v string) { spec.Effort = v })
-	}}
-}
-
-func (w *wizard) stepStrategy() step {
-	return step{show: func() (ui, func([]string) *nested) {
-		items := []picker.Item{
-			{Value: string(engine.RoundRobin), Title: "Rotate", Hint: "each review starts with the next engine, spreading usage across plans", Group: "Strategy"},
-			{Value: string(engine.Priority), Title: "Priority", Hint: "always start with the first engine, use the others only if it fails", Group: "Strategy"},
-		}
-		return choice("When more than one engine is configured", items, string(w.cfg.Strategy), "",
-			func(v string) { w.cfg.Strategy = engine.Strategy(v) })
 	}}
 }
 
