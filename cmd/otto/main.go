@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/app"
+	_ "github.com/OvictorVieira/otto.code.reviewer/internal/boot" // must initialize before bubbletea
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/service"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/setup"

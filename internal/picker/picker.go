@@ -1,5 +1,6 @@
-// Package picker is Otto's full-screen, searchable list: type to filter,
-// arrows or mouse to move, enter or click to pick.
+// Package picker is Otto's setup screen: a centered box with a search field
+// and a grouped list. Type to filter, arrows or mouse to move, enter or click
+// to pick, esc to go back.
 package picker
 
 import (
@@ -21,19 +22,30 @@ type Item struct {
 	Hint  string // dim text after the title
 }
 
-// Options configure one picker.
+// Options configure one screen.
 type Options struct {
-	Title    string
-	Items    []Item
-	Selected string // value marked as current and focused first
-	Footer   string // e.g. "399 models · 34 free"
+	Title      string
+	Items      []Item
+	Selected   string   // single mode: the current value, marked and focused first
+	Multi      bool     // several choices, toggled with space or tab
+	Checked    []string // multi mode: values checked at the start
+	AllowEmpty bool     // multi mode: enter may confirm with nothing checked
+	Footer     string   // e.g. "399 models · 34 free"
 }
 
-// ErrInterrupted is returned when the user presses ctrl+c.
-var ErrInterrupted = errors.New("interrupted")
+// Action says how the screen ended.
+type Action int
 
-// Layout: blank, title, blank, search, blank, then the list.
-const listTop = 5
+// How a screen can end.
+const (
+	Waiting Action = iota
+	Picked
+	Back // esc
+	Quit // ctrl+c
+)
+
+// ErrInterrupted is returned by Run when the user presses ctrl+c.
+var ErrInterrupted = errors.New("interrupted")
 
 var (
 	accent    = lipgloss.Color("#6366F1")
@@ -43,37 +55,46 @@ var (
 	freeSt    = lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E"))
 	currentSt = lipgloss.NewStyle().Foreground(lipgloss.Color("#818CF8"))
 	activeSt  = lipgloss.NewStyle().Background(accent).Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+	boxSt     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#4B5563")).Padding(0, 2)
 )
+
+// Lines of the box above the list: blank, title, blank, search, blank.
+const linesAboveList = 5
 
 type row struct {
 	header string
 	item   int // index into Options.Items; -1 for a header
 }
 
-// Model is the bubbletea model behind the picker.
+// Model is the bubbletea model behind one screen.
 type Model struct {
-	opts      Options
-	query     textinput.Model
-	matches   []int // item indexes that match the query
-	rows      []row
-	cursor    int // position in matches
-	offset    int // first visible row
-	width     int
-	height    int
-	chosen    string
-	picked    bool
-	cancelled bool
-	interrupt bool
+	opts    Options
+	query   textinput.Model
+	matches []int // item indexes that match the query
+	rows    []row
+	checked map[string]bool
+	order   []string // checked values in list order, for stable results
+	cursor  int      // position in matches
+	offset  int      // first visible row
+	listH   int      // rows shown at once, fixed so the box does not jump
+	width   int
+	height  int
+	chosen  string
+	action  Action
 }
 
-// New builds a picker focused on the selected value.
+// New builds a screen focused on the selected value.
 func New(opts Options) *Model {
 	q := textinput.New()
 	q.Placeholder = "Search"
 	q.Prompt = "› "
 	q.Focus()
-	m := &Model{opts: opts, query: q, width: 80, height: 24}
+	m := &Model{opts: opts, query: q, width: 100, height: 30, checked: map[string]bool{}}
+	for _, v := range opts.Checked {
+		m.checked[v] = true
+	}
 	m.refilter()
+	m.listH = max(3, min(len(m.rows), 18))
 	for i, idx := range m.matches {
 		if opts.Items[idx].Value == opts.Selected {
 			m.cursor = i
@@ -83,19 +104,23 @@ func New(opts Options) *Model {
 	return m
 }
 
-// Run shows the picker full screen and returns the picked value.
-// ok is false when the user cancelled with esc.
-func Run(opts Options) (value string, ok bool, err error) {
+// Result is what one screen produced.
+type Result struct {
+	Values []string // the pick (single mode) or every checked value (multi)
+	Action Action
+}
+
+// Run shows the screen full screen and waits for the user.
+func Run(opts Options) (Result, error) {
 	final, err := tea.NewProgram(New(opts), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	if err != nil {
-		return "", false, err
+		return Result{}, err
 	}
 	m := final.(*Model)
-	if m.interrupt {
-		return "", false, ErrInterrupted
+	if m.action == Quit {
+		return Result{Action: Quit}, ErrInterrupted
 	}
-	value, ok = m.Result()
-	return value, ok, nil
+	return Result{Values: m.Values(), Action: m.action}, nil
 }
 
 // Init implements tea.Model.
@@ -115,7 +140,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC:
-			m.cancelled, m.interrupt = true, true
+			m.action = Quit
 			return m, tea.Quit
 		case tea.KeyEsc:
 			if m.query.Value() != "" {
@@ -123,25 +148,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refilter()
 				return m, nil
 			}
-			m.cancelled = true
+			m.action = Back
 			return m, tea.Quit
 		case tea.KeyEnter:
-			if len(m.matches) == 0 {
+			return m, m.confirm()
+		case tea.KeySpace:
+			if m.opts.Multi && m.query.Value() == "" {
+				m.toggle()
 				return m, nil
 			}
-			m.pick()
-			return m, tea.Quit
+		case tea.KeyTab:
+			if m.opts.Multi {
+				m.toggle()
+			} else {
+				m.move(1)
+			}
+			return m, nil
+		case tea.KeyCtrlA:
+			if m.opts.Multi {
+				m.toggleAll()
+			}
+			return m, nil
 		case tea.KeyUp, tea.KeyCtrlP, tea.KeyCtrlK:
 			m.move(-1)
 			return m, nil
-		case tea.KeyDown, tea.KeyCtrlN, tea.KeyCtrlJ, tea.KeyTab:
+		case tea.KeyDown, tea.KeyCtrlN, tea.KeyCtrlJ:
 			m.move(1)
 			return m, nil
 		case tea.KeyPgUp:
-			m.move(-m.listHeight())
+			m.move(-m.listH)
 			return m, nil
 		case tea.KeyPgDown:
-			m.move(m.listHeight())
+			m.move(m.listH)
 			return m, nil
 		case tea.KeyHome:
 			m.move(-len(m.matches))
@@ -161,6 +199,54 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m *Model) confirm() tea.Cmd {
+	if m.opts.Multi {
+		if len(m.checked) == 0 && !m.opts.AllowEmpty {
+			return nil
+		}
+		m.action = Picked
+		return tea.Quit
+	}
+	if len(m.matches) == 0 {
+		return nil
+	}
+	m.chosen, m.action = m.opts.Items[m.matches[m.cursor]].Value, Picked
+	return tea.Quit
+}
+
+func (m *Model) toggle() {
+	if len(m.matches) == 0 {
+		return
+	}
+	v := m.opts.Items[m.matches[m.cursor]].Value
+	if m.checked[v] {
+		delete(m.checked, v)
+	} else {
+		m.checked[v] = true
+	}
+}
+
+func (m *Model) toggleAll() {
+	all := true
+	for _, idx := range m.matches {
+		all = all && m.checked[m.opts.Items[idx].Value]
+	}
+	for _, idx := range m.matches {
+		v := m.opts.Items[idx].Value
+		if all {
+			delete(m.checked, v)
+		} else {
+			m.checked[v] = true
+		}
+	}
+}
+
+func (m *Model) boxHeight() int { return linesAboveList + m.listH + 2 + 2 } // list, blank+help, border
+
+func (m *Model) boxTop() int { return max(0, (m.height-m.boxHeight())/2) }
+
+func (m *Model) listTop() int { return m.boxTop() + 1 + linesAboveList }
+
 func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
@@ -170,8 +256,8 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		m.scroll(3)
 		return nil
 	}
-	r := msg.Y - listTop + m.offset
-	if msg.Y < listTop || msg.Y >= listTop+m.listHeight() || r < 0 || r >= len(m.rows) || m.rows[r].item < 0 {
+	r := msg.Y - m.listTop() + m.offset
+	if msg.Y < m.listTop() || msg.Y >= m.listTop()+m.listH || r < 0 || r >= len(m.rows) || m.rows[r].item < 0 {
 		return nil
 	}
 	for i, idx := range m.matches {
@@ -180,14 +266,13 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		m.pick()
-		return tea.Quit
+		if m.opts.Multi {
+			m.toggle()
+			return nil
+		}
+		return m.confirm()
 	}
 	return nil
-}
-
-func (m *Model) pick() {
-	m.chosen, m.picked = m.opts.Items[m.matches[m.cursor]].Value, true
 }
 
 func (m *Model) move(delta int) {
@@ -199,7 +284,7 @@ func (m *Model) move(delta int) {
 }
 
 func (m *Model) scroll(delta int) {
-	m.offset = max(0, min(max(0, len(m.rows)-m.listHeight()), m.offset+delta))
+	m.offset = max(0, min(max(0, len(m.rows)-m.listH), m.offset+delta))
 }
 
 func (m *Model) refilter() {
@@ -246,11 +331,9 @@ func (m *Model) cursorRow() int {
 	return -1
 }
 
-func (m *Model) listHeight() int { return max(3, m.height-listTop-3) }
-
 func (m *Model) ensureVisible() {
 	r := m.cursorRow()
-	if r < 0 {
+	if r < 0 || m.listH == 0 {
 		return
 	}
 	if r > 0 && m.rows[r-1].item < 0 {
@@ -259,8 +342,8 @@ func (m *Model) ensureVisible() {
 	if r < m.offset {
 		m.offset = r
 	}
-	if cr := m.cursorRow(); cr >= m.offset+m.listHeight() {
-		m.offset = cr - m.listHeight() + 1
+	if cr := m.cursorRow(); cr >= m.offset+m.listH {
+		m.offset = cr - m.listH + 1
 	}
 }
 
@@ -281,48 +364,77 @@ func (m *Model) Visible() []Item {
 	return out
 }
 
-// Result is the picked value; ok is false if nothing was picked.
-func (m *Model) Result() (string, bool) { return m.chosen, m.picked }
+// Query is the current search text.
+func (m *Model) Query() string { return m.query.Value() }
 
-// Cancelled reports whether the user left with esc.
-func (m *Model) Cancelled() bool { return m.cancelled }
+// Action says how the screen ended (Waiting while it is still open).
+func (m *Model) Action() Action { return m.action }
+
+// Values are the picked value (single mode) or every checked value in list order.
+func (m *Model) Values() []string {
+	if !m.opts.Multi {
+		if m.action == Picked {
+			return []string{m.chosen}
+		}
+		return nil
+	}
+	var out []string
+	for _, it := range m.opts.Items {
+		if m.checked[it.Value] {
+			out = append(out, it.Value)
+		}
+	}
+	return out
+}
+
+// Result is the picked value in single mode; ok is false if nothing was picked.
+func (m *Model) Result() (string, bool) { return m.chosen, m.action == Picked && !m.opts.Multi }
+
+// Cancelled reports whether the user left without picking.
+func (m *Model) Cancelled() bool { return m.action == Back || m.action == Quit }
 
 // RowOf is the screen line of an item, or -1 when it is not on screen.
 func (m *Model) RowOf(value string) int {
-	for r := m.offset; r < len(m.rows) && r < m.offset+m.listHeight(); r++ {
+	for r := m.offset; r < len(m.rows) && r < m.offset+m.listH; r++ {
 		if it := m.rows[r].item; it >= 0 && m.opts.Items[it].Value == value {
-			return listTop + r - m.offset
+			return m.listTop() + r - m.offset
 		}
 	}
 	return -1
 }
 
+func (m *Model) boxWidth() int { return max(46, min(m.width-8, 84)) }
+
 // View implements tea.Model.
 func (m *Model) View() string {
-	w := max(40, min(m.width-4, 100))
-	pad := "  "
+	w := m.boxWidth() - 6 // border and padding
 	var b strings.Builder
 
 	b.WriteString("\n")
-	b.WriteString(pad + spread(titleSt.Render(m.opts.Title), dimSt.Render("esc"), w) + "\n\n")
-	b.WriteString(pad + m.query.View() + "\n\n")
+	b.WriteString(spread(titleSt.Render(m.opts.Title), dimSt.Render("esc"), w) + "\n\n")
+	b.WriteString(m.query.View() + "\n\n")
 
 	cr := m.cursorRow()
 	shown := 0
-	for r := m.offset; r < len(m.rows) && shown < m.listHeight(); r++ {
+	for r := m.offset; r < len(m.rows) && shown < m.listH; r++ {
 		shown++
 		rw := m.rows[r]
 		if rw.item < 0 {
-			b.WriteString(pad + headerSt.Render(rw.header) + "\n")
+			b.WriteString(headerSt.Render(rw.header) + "\n")
 			continue
 		}
 		it := m.opts.Items[rw.item]
 		marker := "  "
-		if it.Value == m.opts.Selected {
+		switch {
+		case m.opts.Multi && m.checked[it.Value]:
+			marker = "◉ "
+		case m.opts.Multi:
+			marker = "○ "
+		case it.Value == m.opts.Selected:
 			marker = "● "
 		}
 		if r == cr {
-			b.WriteString(pad + activeSt.Render(plainLine(marker, it, w)) + "\n")
+			b.WriteString(activeSt.Render(plainLine(marker, it, w)) + "\n")
 			continue
 		}
 		title := it.Title
@@ -333,19 +445,39 @@ func (m *Model) View() string {
 		if strings.EqualFold(it.Tag, "free") {
 			tag = freeSt.Render(it.Tag)
 		}
-		b.WriteString(pad + spread(currentSt.Render(marker)+title, tag, w) + "\n")
+		b.WriteString(spread(currentSt.Render(marker)+title, tag, w) + "\n")
 	}
 	if len(m.matches) == 0 {
-		b.WriteString(pad + dimSt.Render(fmt.Sprintf("No match for %q", m.query.Value())) + "\n")
+		b.WriteString(dimSt.Render(fmt.Sprintf("No match for %q", m.query.Value())) + "\n")
 		shown++
 	}
-	for ; shown < m.listHeight(); shown++ {
+	for ; shown < m.listH; shown++ {
 		b.WriteString("\n")
 	}
 
-	help := "↑↓ move · enter or click to pick · type to search · esc cancel"
-	b.WriteString("\n" + pad + spread(dimSt.Render(help), dimSt.Render(m.opts.Footer), w))
-	return b.String()
+	help := "↑↓ move · enter pick · type to search · esc back"
+	if m.opts.Multi {
+		help = fmt.Sprintf("space toggle · ctrl+a all · enter continue (%d) · esc back", len(m.checked))
+	}
+	b.WriteString("\n" + spread(dimSt.Render(help), dimSt.Render(m.opts.Footer), w))
+
+	box := boxSt.Width(m.boxWidth() - 2).Render(b.String())
+	return placeCenter(box, m.width, m.height, m.boxTop())
+}
+
+// placeCenter puts the box horizontally centered, starting at line top.
+func placeCenter(box string, width, height, top int) string {
+	lines := strings.Split(box, "\n")
+	left := max(0, (width-lipgloss.Width(box))/2)
+	var out strings.Builder
+	out.WriteString(strings.Repeat("\n", top))
+	for _, l := range lines {
+		out.WriteString(strings.Repeat(" ", left) + l + "\n")
+	}
+	for n := top + len(lines); n < height-1; n++ {
+		out.WriteString("\n")
+	}
+	return out.String()
 }
 
 // plainLine is an unstyled row, so the highlight bar is one solid color.

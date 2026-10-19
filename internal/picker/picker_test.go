@@ -144,3 +144,96 @@ func TestLongListsScrollToKeepTheCursorVisible(t *testing.T) {
 		t.Error("wheel up should scroll the list")
 	}
 }
+
+func TestMultiSelectTogglesWithSpaceAndConfirmsWithEnter(t *testing.T) {
+	m := New(Options{Title: "Repos", Items: items, Multi: true, Checked: []string{"openai/gpt-5"}})
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m = send(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeySpace}) // check item 2
+	m = send(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeySpace}) // check item 3
+	m = send(m, tea.KeyMsg{Type: tea.KeySpace})                                // uncheck item 3 again
+	m = send(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	got := m.Values()
+	if len(got) != 2 || got[0] != "opencode/beam-free" || got[1] != "openai/gpt-5" {
+		t.Errorf("values = %v, want beam-free (toggled) and gpt-5 (pre-checked)", got)
+	}
+}
+
+func TestMultiSelectWithSearchUsesTabToToggleAndKeepsTheQuery(t *testing.T) {
+	m := New(Options{Title: "Repos", Items: items, Multi: true})
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m = send(m, typeText("gpt")...)
+	m = send(m, tea.KeyMsg{Type: tea.KeyTab})
+
+	if got := m.Values(); len(got) != 1 || got[0] != "openai/gpt-5" {
+		t.Errorf("values = %v", got)
+	}
+	if m.Query() != "gpt" {
+		t.Errorf("query = %q, tab must not clear it", m.Query())
+	}
+}
+
+func TestMultiSelectRequiresAtLeastOneUnlessEmptyIsAllowed(t *testing.T) {
+	m := send(New(Options{Title: "x", Items: items, Multi: true}), tea.WindowSizeMsg{Width: 100, Height: 30}, tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := m.Result(); ok || m.Action() != Waiting {
+		t.Error("enter with nothing checked must not finish")
+	}
+	m = send(New(Options{Title: "x", Items: items, Multi: true, AllowEmpty: true}), tea.WindowSizeMsg{Width: 100, Height: 30}, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.Action() != Picked {
+		t.Error("enter with nothing checked is fine when AllowEmpty")
+	}
+}
+
+func TestClickTogglesInMultiSelect(t *testing.T) {
+	m := New(Options{Title: "x", Items: items, Multi: true})
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	row := m.RowOf("openai/gpt-5")
+	m = send(m, tea.MouseMsg{X: 10, Y: row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if m.Action() != Waiting || len(m.Values()) != 1 {
+		t.Errorf("click should check the row and stay: action %v values %v", m.Action(), m.Values())
+	}
+}
+
+func TestEscGoesBackAndCtrlCQuits(t *testing.T) {
+	if a := send(start(t, ""), tea.KeyMsg{Type: tea.KeyEsc}).Action(); a != Back {
+		t.Errorf("esc action = %v, want Back", a)
+	}
+	if a := send(start(t, ""), tea.KeyMsg{Type: tea.KeyCtrlC}).Action(); a != Quit {
+		t.Errorf("ctrl+c action = %v, want Quit", a)
+	}
+}
+
+func TestBoxIsCenteredOnScreen(t *testing.T) {
+	m := start(t, "")
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) < 20 {
+		t.Fatalf("view has %d lines, want a full-screen frame", len(lines))
+	}
+	top := 0
+	for top < len(lines) && strings.TrimSpace(lines[top]) == "" {
+		top++
+	}
+	if top < 3 || !strings.Contains(lines[top], "╭") {
+		t.Errorf("box should start a few lines down with a border, first content line %d: %q", top, lines[top])
+	}
+	if !strings.HasPrefix(lines[top], strings.Repeat(" ", 5)) {
+		t.Errorf("box should be indented from the left edge: %q", lines[top])
+	}
+}
+
+func TestInputTypesAndSubmits(t *testing.T) {
+	in := NewInput("Model id", "anthropic/claude-sonnet-4")
+	next, _ := in.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	in = next.(*InputModel)
+	for _, r := range "abc" {
+		next, _ = in.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		in = next.(*InputModel)
+	}
+	next, _ = in.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	in = next.(*InputModel)
+	if v, a := in.Value(), in.Action(); v != "abc" || a != Picked {
+		t.Errorf("value %q action %v", v, a)
+	}
+}

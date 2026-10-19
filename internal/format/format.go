@@ -28,6 +28,9 @@ type Meta struct {
 	Model   string
 	Effort  string
 	Trigger string // defaults to "/otto review"
+	// Requester is who asked for the review. It is shown only when Otto posts
+	// as its own identity; a review posted as the user needs no attribution.
+	Requester string
 }
 
 // Badge returns the small colored severity badge.
@@ -99,6 +102,9 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 
 	fmt.Fprintf(&b, "**Reviewed commit:** `%s`\n", short(commitSHA))
 	fmt.Fprintf(&b, "**Engine:** %s\n", engineLabel(m))
+	if m.Requester != "" {
+		fmt.Fprintf(&b, "**Requested by:** @%s\n", m.Requester)
+	}
 	verdict := "patch is correct"
 	if !r.Correct {
 		verdict = "patch is incorrect"
