@@ -175,14 +175,35 @@ func TestMultiSelectWithSearchUsesTabToToggleAndKeepsTheQuery(t *testing.T) {
 	}
 }
 
-func TestMultiSelectRequiresAtLeastOneUnlessEmptyIsAllowed(t *testing.T) {
-	m := send(New(Options{Title: "x", Items: items, Multi: true}), tea.WindowSizeMsg{Width: 100, Height: 30}, tea.KeyMsg{Type: tea.KeyEnter})
-	if _, ok := m.Result(); ok || m.Action() != Waiting {
-		t.Error("enter with nothing checked must not finish")
-	}
-	m = send(New(Options{Title: "x", Items: items, Multi: true, AllowEmpty: true}), tea.WindowSizeMsg{Width: 100, Height: 30}, tea.KeyMsg{Type: tea.KeyEnter})
+func TestEnterOnAnUncheckedItemPicksThatItemWhenNothingIsChecked(t *testing.T) {
+	// Regression: choosing "opencode" with arrows + enter used to confirm the
+	// default (claude) because enter only confirmed what was already checked.
+	m := New(Options{Title: "Engines", Items: items, Multi: true})
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m = send(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyEnter})
+
 	if m.Action() != Picked {
-		t.Error("enter with nothing checked is fine when AllowEmpty")
+		t.Fatalf("action = %v, want Picked", m.Action())
+	}
+	if got := m.Values(); len(got) != 1 || got[0] != "opencode/deepseek-free" {
+		t.Errorf("values = %v, want the item under the cursor", got)
+	}
+}
+
+func TestEnterConfirmsTheCheckedItemsWhenSomeAreChecked(t *testing.T) {
+	m := New(Options{Title: "Engines", Items: items, Multi: true, Checked: []string{"openai/gpt-5"}})
+	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30}, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := m.Values(); len(got) != 1 || got[0] != "openai/gpt-5" {
+		t.Errorf("values = %v: enter must not add the cursor item when something is already checked", got)
+	}
+}
+
+func TestEmptyMultiSelectIsAllowedWhenAskedFor(t *testing.T) {
+	m := send(New(Options{Title: "x", Items: items, Multi: true, AllowEmpty: true}), tea.WindowSizeMsg{Width: 100, Height: 30}, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.Action() != Picked || len(m.Values()) != 0 {
+		t.Errorf("action %v values %v", m.Action(), m.Values())
 	}
 }
 

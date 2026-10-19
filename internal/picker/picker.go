@@ -202,7 +202,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) confirm() tea.Cmd {
 	if m.opts.Multi {
 		if len(m.checked) == 0 && !m.opts.AllowEmpty {
-			return nil
+			// Nothing checked yet: enter picks the item under the cursor, the
+			// way it does in a single-choice list.
+			if len(m.matches) == 0 {
+				return nil
+			}
+			m.checked[m.opts.Items[m.matches[m.cursor]].Value] = true
 		}
 		m.action = Picked
 		return tea.Quit
@@ -457,7 +462,7 @@ func (m *Model) View() string {
 
 	help := "↑↓ move · enter pick · type to search · esc back"
 	if m.opts.Multi {
-		help = fmt.Sprintf("space toggle · ctrl+a all · enter continue (%d) · esc back", len(m.checked))
+		help = fmt.Sprintf("space select · enter continue (%d selected) · esc back", len(m.checked))
 	}
 	b.WriteString("\n" + spread(dimSt.Render(help), dimSt.Render(m.opts.Footer), w))
 
