@@ -20,6 +20,9 @@ var catalogs = map[string][]engine.Model{
 		{ID: "opencode/big-pickle", Name: "Big Pickle", Group: "Free", Tag: "Free", Free: true}, // no effort levels
 		{ID: "anthropic/claude-sonnet-4", Name: "Claude Sonnet 4", Group: "anthropic", Tag: "$3 / $15", Efforts: []string{"low", "high", "max"}},
 	},
+	"copilot": {
+		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", Group: "OpenAI", Tag: "Premium", Note: "Uses premium requests; access depends on your Copilot plan and CLI version.", Efforts: []string{"low", "medium", "high", "xhigh"}},
+	},
 }
 
 func deps() Deps {
@@ -125,6 +128,24 @@ func TestSettingUpOnlyOpencodeNeverVisitsTheOtherEngines(t *testing.T) {
 	}
 	if s := d.screen(); !strings.Contains(s, "opencode · select model") || strings.Contains(s, "claude · select") {
 		t.Errorf("the next screen must be opencode's model list:\n%s", s)
+	}
+}
+
+func TestCopilotListsPremiumModelsAndAllowsTypingOtherIds(t *testing.T) {
+	d := start(t)
+	d.key(tea.KeyEnter) // repositories
+	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter)
+
+	if screen := d.screen(); !strings.Contains(screen, "GPT-5.3 Codex") ||
+		!strings.Contains(screen, "Premium") || !strings.Contains(screen, "Type a model id") {
+		t.Fatalf("Copilot picker should show paid models and allow custom IDs:\n%s", screen)
+	}
+	d.key(tea.KeyDown, tea.KeyEnter) // select GPT-5.3 Codex
+	if got := d.w.cfg.Engines[0].Model; got != "gpt-5.3-codex" {
+		t.Fatalf("model = %q, want gpt-5.3-codex", got)
+	}
+	if !strings.Contains(d.screen(), "select effort") {
+		t.Fatalf("expected Copilot effort step:\n%s", d.screen())
 	}
 }
 

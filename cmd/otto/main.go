@@ -16,6 +16,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/app"
 	_ "github.com/OvictorVieira/otto.code.reviewer/internal/boot" // must initialize before bubbletea
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
+	reviewprogress "github.com/OvictorVieira/otto.code.reviewer/internal/progress"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/service"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/setup"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/update"
@@ -29,11 +30,12 @@ const usage = `otto: local code reviewer for GitHub pull requests
 Usage:
   otto setup                          configure repositories, engines and the background service
   otto review <pr-url> [flags]        review one pull request now
-      --engine claude|codex|cursor|opencode   use only this engine
+      --engine claude|codex|cursor|opencode|copilot   use only this engine
       --dry-run                       print the review instead of posting it
       --focus "text"                  extra instructions for the reviewer
   otto watch [--once]                 poll repositories and answer the trigger comment
   otto service install|uninstall|status
+  otto update                         check GitHub and install the latest release
   otto clean                          delete cached clones and worktrees
   otto version
 `
@@ -80,6 +82,8 @@ func run(ctx context.Context, args []string) error {
 		return a.Watch(ctx, *once)
 	case "service":
 		return serviceCmd(args[1:])
+	case "update":
+		return updateNow(ctx)
 	case "clean":
 		if err := workspace.Purge(); err != nil {
 			return err
@@ -123,7 +127,21 @@ func review(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	report, err := a.Review(ctx, repo, number, app.Options{Engine: *engineName, DryRun: *dryRun, Instructions: *focus})
+	var display *reviewprogress.Review
+	if interactive() {
+		display, err = reviewprogress.Start(os.Stdout)
+		if err != nil {
+			return fmt.Errorf("start review progress display: %w", err)
+		}
+	}
+	options := app.Options{
+		Engine: *engineName, DryRun: *dryRun, Instructions: *focus, ShowProgress: true, PostQuotaFailure: true,
+	}
+	if display != nil {
+		options.Progress = display.Update
+		options.ProgressDone = display.Stop
+	}
+	report, err := a.Review(ctx, repo, number, options)
 	if err != nil {
 		return err
 	}
@@ -171,6 +189,35 @@ func newUpdater() *update.Updater {
 		return nil
 	}
 	return &update.Updater{Current: version, StatePath: filepath.Join(dir, "update.json")}
+}
+
+func updateNow(ctx context.Context) error {
+	dir, err := config.Dir()
+	if err != nil {
+		return fmt.Errorf("find Otto configuration directory: %w", err)
+	}
+	u := &update.Updater{Current: version, StatePath: filepath.Join(dir, "update.json")}
+	latest, err := u.LatestVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if !update.Newer(version, latest) {
+		if version == "dev" {
+			return fmt.Errorf("this is a development build; latest published release is %s", latest)
+		}
+		fmt.Printf("Otto is up to date (%s; latest: %s).\n", version, latest)
+		return nil
+	}
+
+	fmt.Printf("Updating Otto %s → %s...\n", version, latest)
+	if err := u.Install(ctx, latest); err != nil {
+		return fmt.Errorf("install Otto %s: %w", latest, err)
+	}
+	fmt.Printf("Updated to %s. Restarting...\n", latest)
+	if err := update.Restart(); err != nil {
+		return fmt.Errorf("Otto was updated to %s but could not restart; run `otto update` again: %w", latest, err)
+	}
+	return nil
 }
 
 func interactive() bool {

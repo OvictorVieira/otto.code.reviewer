@@ -335,7 +335,7 @@ func (w *wizard) stepModel(i int) step {
 			if spec.Model != "" && !known {
 				items = append(items, picker.Item{Value: spec.Model, Title: spec.Model, Group: "Current", Tag: "current"})
 			}
-			if len(catalog) == 0 {
+			if len(catalog) == 0 || spec.Name == "copilot" {
 				items = append(items, picker.Item{Value: typeModel, Title: "Type a model id…", Group: "Other"})
 			}
 			footer := fmt.Sprintf("%d models", len(catalog))

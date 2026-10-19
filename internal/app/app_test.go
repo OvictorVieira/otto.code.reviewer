@@ -239,6 +239,52 @@ func TestReviewFallsBackToNextEngineAndLabelsTheOneThatAnswered(t *testing.T) {
 	}
 }
 
+func TestManualReviewShowsLocalProgress(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "copilot", answer: noFindings})
+	var statuses []string
+	progressStopped := false
+
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{
+		ShowProgress: true, Progress: func(status string) { statuses = append(statuses, status) },
+		ProgressDone: func() { progressStopped = true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Carregando detalhes do pull request",
+		"Analisando alterações do pull request",
+		"Preparando worktree",
+		"Analisando com copilot",
+	} {
+		if !strings.Contains(strings.Join(statuses, "\n"), want) {
+			t.Errorf("progress updates missing %q:\n%v", want, statuses)
+		}
+	}
+	if !progressStopped {
+		t.Error("progress display must be stopped before returning")
+	}
+	if got := h.out.String(); !strings.Contains(got, "Otto Review: 0 finding(s)") ||
+		strings.Contains(got, "loading pull request details") {
+		t.Errorf("manual review should print only the final summary, got:\n%s", got)
+	}
+}
+
+func TestManualQuotaExhaustionPostsResetDetailsToPR(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "copilot", err: &engine.QuotaError{Details: "quota resets in 2 hours"}})
+
+	_, err := h.app.Review(context.Background(), repo, 1, Options{ShowProgress: true, PostQuotaFailure: true})
+	if !errors.Is(err, engine.ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want quota exhaustion", err)
+	}
+	if len(h.host.plain) != 1 || !strings.Contains(h.host.plain[0], "Otto Review") ||
+		!strings.Contains(h.host.plain[0], "quota resets in 2 hours") {
+		t.Errorf("quota notice = %v", h.host.plain)
+	}
+	if len(h.host.posted) != 0 {
+		t.Error("quota failure must not be reported as a completed code review")
+	}
+}
+
 func TestRotationAdvancesBetweenReviewsButNotForExplicitEngine(t *testing.T) {
 	var calls []string
 	h := newHarness(t,

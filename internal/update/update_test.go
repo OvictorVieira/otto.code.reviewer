@@ -75,6 +75,31 @@ func TestCheckFailureIsSilent(t *testing.T) {
 	}
 }
 
+func TestLatestVersionAlwaysChecksAndValidatesTheReleaseTag(t *testing.T) {
+	calls := 0
+	u := &Updater{
+		StatePath: filepath.Join(t.TempDir(), "update.json"),
+		Latest: func(context.Context) (string, error) {
+			calls++
+			return "v0.1.6", nil
+		},
+	}
+	for i := 0; i < 2; i++ {
+		tag, err := u.LatestVersion(context.Background())
+		if err != nil || tag != "v0.1.6" {
+			t.Fatalf("LatestVersion = %q, %v", tag, err)
+		}
+	}
+	if calls != 2 {
+		t.Errorf("latest endpoint called %d times, want a fresh check each time", calls)
+	}
+
+	u.Latest = func(context.Context) (string, error) { return "latest", nil }
+	if _, err := u.LatestVersion(context.Background()); err == nil {
+		t.Error("invalid release tag must fail")
+	}
+}
+
 func release(t *testing.T, body string) (*httptest.Server, string) {
 	t.Helper()
 	var tgz []byte

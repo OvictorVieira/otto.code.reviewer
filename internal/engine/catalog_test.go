@@ -99,6 +99,28 @@ func TestCodexCatalogHidesModelsCodexHidesItself(t *testing.T) {
 	}
 }
 
+func TestCopilotCatalogIncludesPremiumModelsAndCanBeCustomized(t *testing.T) {
+	models := Catalog("copilot")
+	if len(models) == 0 {
+		t.Fatal("Copilot should list known premium models")
+	}
+	var ids []string
+	for _, model := range models {
+		ids = append(ids, model.ID)
+		if model.Tag != "Premium" || !strings.Contains(model.Note, "access depends") {
+			t.Errorf("model should explain premium access limits: %+v", model)
+		}
+	}
+	for _, id := range []string{"gpt-5.3-codex", "claude-sonnet-4.6", "gemini-4-argon", "grok-4.7"} {
+		if !slices.Contains(ids, id) {
+			t.Errorf("Copilot catalog missing %q: %v", id, ids)
+		}
+	}
+	if got := Efforts("copilot"); !slices.Equal(got, []string{"low", "medium", "high", "xhigh"}) {
+		t.Errorf("efforts = %v", got)
+	}
+}
+
 // Excerpt of `claude --help` from the installed CLI.
 const claudeHelp = `  --effort <level>                      Effort level for the current session
                                         (low, medium, high, xhigh, max)

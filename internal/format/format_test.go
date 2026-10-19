@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 )
 
@@ -105,8 +106,36 @@ func TestSummaryListsVerdictCommitAndFindingsOutsideDiff(t *testing.T) {
 
 func TestSummaryWithoutFindings(t *testing.T) {
 	s := Summary("abc1234567890", review.Placement{}, review.Result{Correct: true, Explanation: "ok"}, Meta{Engine: "claude"})
-	if !strings.Contains(s, "Didn't find any major issues") {
+	if !strings.Contains(s, "Otto Review: Didn't find any major issues. Bravo.") ||
+		!strings.Contains(s, "**Reviewed commit:** `abc1234567`") ||
+		!strings.Contains(s, "<summary>ℹ️ About Otto in GitHub</summary>") {
 		t.Errorf("summary = %s", s)
+	}
+}
+
+func TestSummaryWithFindingsUsesCodexReviewLayout(t *testing.T) {
+	s := Summary("abc1234567890", review.Placement{Inline: []review.Finding{{Title: "Finding"}}},
+		review.Result{}, Meta{Engine: "copilot"})
+	for _, want := range []string{
+		"### 💡 Otto Review",
+		"Here are some automated review suggestions for this pull request.",
+		"**Reviewed commit:** `abc1234567`",
+		"<summary>ℹ️ About Otto in GitHub</summary>",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("summary missing %q:\n%s", want, s)
+		}
+	}
+}
+
+func TestQuotaFailureUsesOnlyProviderReportedResetDetails(t *testing.T) {
+	s := QuotaFailure(&engine.QuotaError{Details: "retry after 30 minutes"})
+	if !strings.Contains(s, "retry after 30 minutes") || strings.Contains(s, "check your Copilot usage page") {
+		t.Errorf("quota comment = %s", s)
+	}
+	s = QuotaFailure(engine.ErrQuotaExceeded)
+	if !strings.Contains(s, "does not guess a reset time") || !strings.Contains(s, "Check your account's usage page") {
+		t.Errorf("quota comment without provider details = %s", s)
 	}
 }
 

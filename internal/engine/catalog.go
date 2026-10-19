@@ -62,8 +62,48 @@ func Catalog(name string) []Model {
 			}
 		}
 		return parseOpencode(out)
+	case "copilot":
+		return copilotModels()
 	}
 	return nil
+}
+
+// copilotModels is the published premium catalog; the CLI checks actual access
+// when a selected model is used because availability varies by account and version.
+func copilotModels() []Model {
+	models := []Model{
+		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-5.4-nano", Name: "GPT-5.4 nano", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-6-astra", Name: "GPT-6 Astra", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-6-luna", Name: "GPT-6 Luna", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-6-sol", Name: "GPT-6 Sol", Group: "OpenAI", Tag: "Premium"},
+		{ID: "gpt-6.1-sol", Name: "GPT-6.1 Sol", Group: "OpenAI", Tag: "Premium"},
+		{ID: "claude-fable-5", Name: "Claude Fable 5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-fable-5.1", Name: "Claude Fable 5.1", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-haiku-4.5", Name: "Claude Haiku 4.5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-haiku-5.5", Name: "Claude Haiku 5.5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-opus-4.8", Name: "Claude Opus 4.8", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-opus-4.8-fast", Name: "Claude Opus 4.8 (fast)", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-opus-5", Name: "Claude Opus 5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-opus-5.5", Name: "Claude Opus 5.5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-sonnet-4.6", Name: "Claude Sonnet 4.6", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "claude-sonnet-5.5", Name: "Claude Sonnet 5.5", Group: "Anthropic", Tag: "Premium"},
+		{ID: "gemini-3.8-flash", Name: "Gemini 3.8 Flash", Group: "Google", Tag: "Premium"},
+		{ID: "gemini-4-argon", Name: "Gemini 4 Argon", Group: "Google", Tag: "Premium"},
+		{ID: "mai-code-1.1-flash", Name: "MAI-Code-1.1-Flash", Group: "Microsoft", Tag: "Premium"},
+		{ID: "kimi-k3", Name: "Kimi K3", Group: "Moonshot AI", Tag: "Premium"},
+		{ID: "grok-4.5", Name: "Grok 4.5", Group: "xAI", Tag: "Premium"},
+		{ID: "grok-4.6", Name: "Grok 4.6", Group: "xAI", Tag: "Premium"},
+		{ID: "grok-4.7", Name: "Grok 4.7", Group: "xAI", Tag: "Premium"},
+	}
+	for i := range models {
+		models[i].Note = "Uses premium requests; access depends on your Copilot plan and CLI version."
+	}
+	return models
 }
 
 // Efforts lists the default reasoning levels of an engine, used when the
@@ -76,6 +116,8 @@ func Efforts(name string) []string {
 		return []string{"minimal", "low", "medium", "high", "xhigh"}
 	case "opencode":
 		return []string{"minimal", "low", "medium", "high", "max"}
+	case "copilot":
+		return []string{"low", "medium", "high", "xhigh"}
 	}
 	return nil // cursor: reasoning comes with the model name
 }

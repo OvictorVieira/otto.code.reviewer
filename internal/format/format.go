@@ -3,9 +3,11 @@
 package format
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 )
 
@@ -92,15 +94,16 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 		trigger = "/otto review"
 	}
 	var b strings.Builder
-	b.WriteString("<!-- otto-review-receipt:v1 -->\n\n### 💡 Otto Review\n\n")
+	b.WriteString("<!-- otto-review-receipt:v1 -->\n\n")
 
 	if len(p.Inline)+len(p.Outside) == 0 {
-		b.WriteString("Didn't find any major issues. 👍\n\n")
+		b.WriteString("Otto Review: Didn't find any major issues. Bravo.\n\n")
 	} else {
-		b.WriteString("Here are some automated review suggestions for this pull request.\n\n")
+		b.WriteString("### 💡 Otto Review\n\nHere are some automated review suggestions for this pull request.\n\n")
 	}
 
 	fmt.Fprintf(&b, "**Reviewed commit:** `%s`\n", short(commitSHA))
+	b.WriteString("\n<details> <summary>ℹ️ About Otto in GitHub</summary>\n<br/>\n\n")
 	fmt.Fprintf(&b, "**Engine:** %s\n", engineLabel(m))
 	if m.Requester != "" {
 		fmt.Fprintf(&b, "**Requested by:** @%s\n", m.Requester)
@@ -136,10 +139,22 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 		}
 	}
 
-	fmt.Fprintf(&b, "\n<details> <summary>ℹ️ About Otto</summary>\n<br/>\n\n"+
-		"Otto is an open-source reviewer that runs on the author's own machine, using the AI subscription they already have. "+
+	fmt.Fprintf(&b, "\nOtto is an open-source reviewer that runs on the author's own machine, using the AI access on their account. "+
 		"Comment `%s` on a pull request to request a review.\n\n</details>\n", trigger)
 	return b.String()
+}
+
+// QuotaFailure renders a provider quota failure for a manual review request.
+func QuotaFailure(err error) string {
+	var quota *engine.QuotaError
+	_ = errors.As(err, &quota)
+	details := "The provider did not include a reset time. Check your account's usage page for when requests become available again."
+	if quota != nil && quota.Details != "" {
+		details = strings.TrimSpace(quota.Details)
+	}
+	return fmt.Sprintf("### 💡 Otto Review\n\n"+
+		"Otto stopped the review because an AI usage limit was reached. Any reset information reported by the provider is below; Otto does not guess a reset time.\n\n"+
+		"<details> <summary>Engine status</summary>\n<br/>\n\n```\n%s\n```\n\n</details>\n", details)
 }
 
 func engineLabel(m Meta) string {

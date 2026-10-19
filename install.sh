@@ -158,7 +158,8 @@ report_engines() {
 	for pair in "claude:Claude Code:https://docs.anthropic.com/claude-code" \
 		"codex:Codex:https://github.com/openai/codex" \
 		"cursor-agent:Cursor:https://cursor.com/cli" \
-		"opencode:OpenCode:https://opencode.ai"; do
+		"opencode:OpenCode:https://opencode.ai" \
+		"copilot:GitHub Copilot CLI:https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli"; do
 		bin="${pair%%:*}"
 		rest="${pair#*:}"
 		name="${rest%%:*}"

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
@@ -114,11 +115,15 @@ func (a *App) logf(format string, args ...any) {
 
 // Options tune one review.
 type Options struct {
-	Engine       string // run only this engine (no rotation)
-	DryRun       bool   // print instead of posting
-	Instructions string // extra focus from the requester
-	PostToken    string // post as this identity instead of the user's gh login
-	Requester    string // who asked, shown when posting as the bot
+	Engine           string       // run only this engine (no rotation)
+	DryRun           bool         // print instead of posting
+	Instructions     string       // extra focus from the requester
+	PostToken        string       // post as this identity instead of the user's gh login
+	Requester        string       // who asked, shown when posting as the bot
+	ShowProgress     bool         // use a transient manual-review display instead of progress log lines
+	PostQuotaFailure bool         // comment on a manual review when an engine reports an exhausted quota
+	Progress         func(string) // update the transient manual-review display
+	ProgressDone     func()       // clear the transient display before the result is written
 }
 
 // Report summarizes one finished review.
@@ -144,18 +149,28 @@ func ParseRef(ref string) (string, int, error) {
 func (a *App) Review(ctx context.Context, repo string, number int, opt Options) (Report, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Cfg.Timeout)
 	defer cancel()
+	var progressOnce sync.Once
+	finishProgress := func() {
+		if opt.ProgressDone != nil {
+			progressOnce.Do(opt.ProgressDone)
+		}
+	}
+	defer finishProgress()
 
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: loading pull request details", repo, number), "Carregando detalhes do pull request…")
 	pr, err := a.Host.GetPR(ctx, repo, number)
 	if err != nil {
 		return Report{}, err
 	}
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: fetching the pull request diff", repo, number), "Analisando alterações do pull request…")
 	rawDiff, err := a.Host.Diff(ctx, repo, number)
 	if err != nil {
 		return Report{}, err
 	}
 	d := diff.Parse(rawDiff)
 
-	a.logf("%s#%d: preparing worktree at %s", repo, number, short(pr.HeadRefOid))
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: preparing worktree at %s", repo, number, short(pr.HeadRefOid)),
+		fmt.Sprintf("Preparando worktree · %s", short(pr.HeadRefOid)))
 	wt, err := a.Checkouts.Prepare(ctx, repo, number, pr.BaseRefName)
 	if err != nil {
 		return Report{}, err
@@ -169,8 +184,10 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	if err != nil {
 		return Report{}, err
 	}
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: preparing review instructions for %d changed files", repo, number, len(d.Files())),
+		fmt.Sprintf("Preparando análise de %d arquivos…", len(d.Files())))
 
-	pool, err := a.pool(opt.Engine)
+	pool, err := a.pool(opt.Engine, opt)
 	if err != nil {
 		return Report{}, err
 	}
@@ -181,15 +198,29 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	scratch.Close()
 	defer os.Remove(scratch.Name())
 
-	a.logf("%s#%d: reviewing (strategy %s, verify %v)", repo, number, pool.Strategy, a.Cfg.Verify)
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s, verify %v)", repo, number, pool.Strategy, a.Cfg.Verify),
+		"Preparando revisão…")
 	accept := func(out string) error { _, err := review.ParseResult(out, wt.Dir()); return err }
+	var progress func(string)
+	if opt.ShowProgress && opt.Progress != nil {
+		progress = opt.Progress
+	}
 	outcome, err := pool.Run(ctx, engine.Request{
-		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify,
+		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify, Progress: progress,
 	}, a.State.Rotation, accept)
-	for _, f := range outcome.Failures {
-		a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
+	if !opt.ShowProgress {
+		for _, f := range outcome.Failures {
+			a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
+		}
 	}
 	if err != nil {
+		if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
+			a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
+			post := github.WithToken(ctx, opt.PostToken)
+			if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
+				return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
+			}
+		}
 		return Report{}, err
 	}
 	if opt.Engine == "" {
@@ -209,6 +240,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	report := Report{Engine: spec.Name, Findings: len(placement.Inline) + len(placement.Outside)}
 
 	if opt.DryRun {
+		finishProgress()
 		fmt.Fprintln(a.Out, payload.Body)
 		for _, c := range payload.Comments {
 			fmt.Fprintf(a.Out, "\n--- %s:%d\n%s\n", c.Path, c.Line, c.Body)
@@ -216,13 +248,15 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		return report, nil
 	}
 
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: posting review to GitHub", repo, number), "Publicando revisão no GitHub…")
 	if err := a.Host.PostReview(post, repo, number, payload); err != nil {
 		if len(payload.Comments) == 0 {
 			return report, err
 		}
 		// GitHub rejects the whole review when one inline position is invalid.
 		// Retry with every finding listed in the summary instead.
-		a.logf("%s#%d: inline comments rejected (%v); posting them in the summary", repo, number, err)
+		a.reviewStatus(opt, fmt.Sprintf("%s#%d: inline comments rejected (%v); posting them in the summary", repo, number, err),
+			"Reformatando comentários para o GitHub…")
 		placement.Outside = append(placement.Inline, placement.Outside...)
 		placement.Inline = nil
 		if err := a.Host.PostReview(post, repo, number, format.Payload(pr.HeadRefOid, placement, result, meta)); err != nil {
@@ -230,8 +264,25 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		}
 	}
 	report.Posted = true
-	a.logf("%s#%d: posted review with %d findings (engine %s)", repo, number, report.Findings, spec.Name)
+	finishProgress()
+	if opt.ShowProgress {
+		fmt.Fprintf(a.Out, "Otto Review: %d finding(s) · %s · posted\n", report.Findings, spec.Name)
+	} else {
+		a.logf("%s#%d: posted review with %d findings (engine %s)", repo, number, report.Findings, spec.Name)
+	}
 	return report, nil
+}
+
+func (a *App) reviewStatus(opt Options, logMessage, progressMessage string) {
+	if opt.ShowProgress {
+		if opt.Progress != nil && progressMessage != "" {
+			opt.Progress(progressMessage)
+		}
+		return
+	}
+	if logMessage != "" {
+		a.logf("%s", logMessage)
+	}
 }
 
 type pool struct {
@@ -241,7 +292,7 @@ type pool struct {
 
 func (p pool) spec(i int) engine.Spec { return p.specs[i] }
 
-func (a *App) pool(only string) (pool, error) {
+func (a *App) pool(only string, opt Options) (pool, error) {
 	var p pool
 	p.Strategy = a.Cfg.Strategy
 	for _, s := range a.Cfg.Engines {
@@ -249,7 +300,8 @@ func (a *App) pool(only string) (pool, error) {
 			continue
 		}
 		if !a.Installed(s.Name) {
-			a.logf("engine %s is configured but not installed; skipping", s.Name)
+			a.reviewStatus(opt, fmt.Sprintf("engine %s is configured but not installed; skipping", s.Name),
+				fmt.Sprintf("Ignorando %s: não está instalado…", s.Name))
 			continue
 		}
 		p.Engines = append(p.Engines, a.NewEngine(s))

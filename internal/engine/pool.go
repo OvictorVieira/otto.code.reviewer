@@ -32,6 +32,19 @@ type Outcome struct {
 	Failures []string
 }
 
+type allFailedError struct {
+	failures []error
+	messages []string
+}
+
+func (e allFailedError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrAllFailed, strings.Join(e.messages, "; "))
+}
+
+func (e allFailedError) Unwrap() []error {
+	return append([]error{ErrAllFailed}, e.failures...)
+}
+
 // Run starts at cursor (round-robin) or at 0 (priority). accept validates the
 // answer; a rejected answer counts as a failure and triggers the fallback.
 func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(string) error) (Outcome, error) {
@@ -45,22 +58,31 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 	}
 
 	var out Outcome
+	var failures []error
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
 		e := p.Engines[idx]
+		if req.Progress != nil {
+			req.Progress(fmt.Sprintf("Analisando com %s…", e.Name()))
+		}
 		text, err := e.Run(ctx, req)
 		if err == nil {
 			err = accept(text)
 		}
 		if err != nil {
-			out.Failures = append(out.Failures, fmt.Sprintf("%s: %v", e.Name(), err))
+			failure := fmt.Errorf("%s: %w", e.Name(), err)
+			out.Failures = append(out.Failures, failure.Error())
+			failures = append(failures, failure)
 			if ctx.Err() != nil {
 				break
+			}
+			if req.Progress != nil && i+1 < n {
+				req.Progress(fmt.Sprintf("%s indisponível; tentando o próximo engine…", e.Name()))
 			}
 			continue
 		}
 		out.Output, out.Engine, out.Index, out.Next = text, e.Name(), idx, (idx+1)%n
 		return out, nil
 	}
-	return out, fmt.Errorf("%w: %s", ErrAllFailed, strings.Join(out.Failures, "; "))
+	return out, allFailedError{failures: failures, messages: out.Failures}
 }

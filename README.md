@@ -4,13 +4,13 @@
 [![release](https://img.shields.io/github/v/release/OvictorVieira/otto.code.reviewer)](https://github.com/OvictorVieira/otto.code.reviewer/releases)
 [![license: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE.md)
 
-**Senior-level code review on your pull requests, running on your machine, with the AI you already pay for.**
+**Senior-level code review on your pull requests, running on your machine, with the AI access you already use.**
 
 Comment `/otto review` on a pull request. Otto checks the branch out, has your agent read the spec, run the tests and
 probe the edge cases, then posts the review as you: colored `P0`–`P3` findings on the exact lines, a verdict,
 and what it actually verified.
 
-It works with **Claude Code**, **Codex**, **Cursor** and **OpenCode**. Use one, or rotate between them so no single
+It works with **Claude Code**, **Codex**, **Cursor**, **OpenCode** and **GitHub Copilot CLI**. Use one, or rotate between them so no single
 plan hits its limit, with automatic fallback when one fails.
 
 ## Installation (60-second setup)
@@ -71,6 +71,22 @@ opencode auth login
 ```
 
 Models use the `provider/model` format from `opencode models`. Effort maps to OpenCode's `--variant`.
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong></summary>
+
+```bash
+npm install -g @github/copilot
+copilot login
+```
+
+`otto setup` lists Copilot's supported premium models, and you can also enter a model ID not shown in the list or use
+the CLI default. Premium-model access depends on your GitHub plan, organization policy, and Copilot CLI version; choosing
+a model does not guarantee access. If the CLI rejects the model or your account cannot use it, Otto reports that error
+and tries configured fallback engines. Otto cannot bypass usage limits. For manual reviews, Otto posts reset details
+returned by the provider if all engines fail; it never guesses a reset time.
 
 </details>
 
@@ -140,9 +156,15 @@ without setting anything up in the repository:
 ```bash
 otto review https://github.com/acme/api/pull/482
 otto review acme/api#482 --engine codex            # use only this engine
+otto review acme/api#482 --engine copilot          # use only GitHub Copilot CLI
 otto review acme/api#482 --dry-run                 # print it, post nothing
 otto review acme/api#482 --focus "security only"
 ```
+
+In an interactive terminal, manual reviews show one animated status line with the current stage and, when Copilot
+reports a file read, the file path. Otto clears this temporary display when the review finishes and then prints only
+the final summary. It does not stream private model reasoning or file contents. The background watcher keeps its
+concise log output.
 
 **Housekeeping:**
 
@@ -184,7 +206,7 @@ engines:
 </details>
 
 <details>
-<summary><strong>Rotate across every plan you pay for</strong></summary>
+<summary><strong>Rotate across the AI plans you use</strong></summary>
 
 Each review starts with the next engine. If one is down or out of quota, the next one picks it up.
 
@@ -197,6 +219,8 @@ engines:
   - name: cursor
   - name: opencode
     model: anthropic/claude-sonnet-4
+  - name: copilot
+    # omit model to use Copilot CLI's default, or set a model ID
 ```
 
 </details>
@@ -241,7 +265,7 @@ repos:
   all: false
   selected: [acme/api, acme/web]
 engines:
-  - name: claude             # claude | codex | cursor | opencode
+  - name: claude             # claude | codex | cursor | opencode | copilot
     model: sonnet            # empty = the CLI's default model
     effort: high             # empty = the CLI's default effort
 ```
@@ -275,7 +299,7 @@ uses.
 
 **The problem.** The reviewer you like comes with one subscription, and its limits.
 
-**The fix.** Otto drives whatever CLI you already pay for, through one prompt that behaves the same on every engine.
+**The fix.** Otto drives whichever AI CLI you already use, through one prompt that behaves the same on every engine.
 Switch, rotate or fall back without changing how reviews look.
 
 ### #4: Running someone's branch leaves a mess
@@ -297,7 +321,7 @@ worktree is deleted, and leftovers from a crash are swept on the next start.
   disposable worktree at the PR head
         |
         v
-  engine: claude | codex | cursor | opencode   (rotation + fallback)
+  engine: claude | codex | cursor | opencode | copilot   (rotation + fallback)
     read spec and repo rules -> install -> test -> probe edge cases
         |
         v
@@ -330,6 +354,8 @@ In `config.yaml` this is `github_app: {id: 123456, private_key: ~/.config/otto/o
 
 ## Updates
 
+- **Check or install the latest release**: run `otto update`. It checks GitHub immediately, installs the latest release
+  after verifying its checksum, and restarts Otto; if already current, it says so. This updates only published releases.
 - **By hand** (`otto setup`, `otto review`, ...): when a newer release exists, Otto asks `Update now? [Y/n]`, installs it
   after verifying the checksum, and carries on with the new version. Say no and it asks again tomorrow.
 - **From GitHub** (the background watcher answering `/otto review`): Otto updates itself first, restarts, and then
@@ -357,7 +383,7 @@ Other options: `--version v0.1.0` installs a specific release, `--no-setup` skip
 
 - macOS for the background service (`otto review` also runs on Linux)
 - [GitHub CLI](https://cli.github.com) and `git`
-- One of: Claude Code, Codex, Cursor or OpenCode
+- One of: Claude Code, Codex, Cursor, OpenCode or GitHub Copilot CLI
 
 GitLab and other hosts are not supported yet.
 

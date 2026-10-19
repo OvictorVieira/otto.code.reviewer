@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,71 @@ func TestOpencodeCommandUsesPlanAgentAndVariant(t *testing.T) {
 	}
 	if c.PromptFile == "" || !slices.Contains(c.Args, c.PromptFile) {
 		t.Errorf("opencode must attach the prompt as a file: %+v", c)
+	}
+}
+
+func TestCopilotCommandUsesHeadlessJSONAndRestrictsWrites(t *testing.T) {
+	c, err := BuildCommand(Spec{Name: "copilot", Model: "gpt-6-luna", Effort: "high"}, Request{
+		Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out", Verify: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Bin != "copilot" {
+		t.Fatalf("bin = %q, want copilot", c.Bin)
+	}
+	for _, want := range [][]string{
+		{"-p", "review this"}, {"--output-format", "json"}, {"--stream", "on"},
+		{"--allow-all-tools"}, {"--deny-tool=write"},
+		{"--deny-tool=shell(git commit)"}, {"--deny-tool=shell(git push)"},
+		{"--disable-builtin-mcps"}, {"--model", "gpt-6-luna"},
+		{"--reasoning-effort", "high"},
+	} {
+		if !containsSeq(c.Args, want) {
+			t.Errorf("args %v missing %v", c.Args, want)
+		}
+	}
+
+	readOnly, err := BuildCommand(Spec{Name: "copilot"}, Request{Prompt: "p", Dir: "/wt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(readOnly.Args, "--deny-tool=shell") {
+		t.Errorf("read-only Copilot must not run shell commands: %v", readOnly.Args)
+	}
+}
+
+func TestCopilotOutputExtractsFinalAssistantMessageFromJSONL(t *testing.T) {
+	out, err := ExtractOutput("copilot", strings.Join([]string{
+		`{"type":"session.start","data":{"sessionId":"abc"}}`,
+		`{"type":"assistant.message","data":{"content":"{\"findings\":[]}"}}`,
+	}, "\n"), "")
+	if err != nil || out != `{"findings":[]}` {
+		t.Errorf("out = %q, err = %v", out, err)
+	}
+	if _, err := ExtractOutput("copilot", `{"type":"session.idle","data":{}}`, ""); err == nil {
+		t.Error("missing final assistant message must fail explicitly")
+	}
+}
+
+func TestCopilotProgressShowsToolCategoriesButNeverReasoningText(t *testing.T) {
+	progress, quota := copilotEvent(`{"type":"tool.execution_start","data":{"toolName":"view","arguments":{"path":"/worktree/internal/secret.go"}}}`, "/worktree")
+	if quota != "" || !strings.Contains(progress, "internal/secret.go") {
+		t.Errorf("progress = %q, quota = %q", progress, quota)
+	}
+	progress, quota = copilotEvent(`{"type":"assistant.reasoning","data":{"content":"private chain of thought"}}`, "/worktree")
+	if progress != "" || quota != "" {
+		t.Errorf("reasoning events must not be surfaced: progress = %q, quota = %q", progress, quota)
+	}
+}
+
+func TestCopilotQuotaErrorIsRecognized(t *testing.T) {
+	_, quota := copilotEvent(`{"type":"session.error","data":{"message":"Premium request limit reached; resets at 2026-10-20T00:00:00Z"}}`, "/worktree")
+	if !strings.Contains(quota, "resets at") {
+		t.Errorf("quota details = %q", quota)
+	}
+	if !isQuotaMessage("HTTP 429 Too Many Requests") {
+		t.Error("HTTP 429 must be recognized as quota exhaustion")
 	}
 }
 
@@ -205,6 +271,17 @@ func TestAllEnginesFail(t *testing.T) {
 	}}
 	if _, err := p.Run(context.Background(), Request{}, 0, accept); err == nil {
 		t.Fatal("expected error when every engine fails")
+	}
+}
+
+func TestAllFailedErrorPreservesQuotaCause(t *testing.T) {
+	var runs []string
+	p := Pool{Strategy: Priority, Engines: []Engine{
+		fake{"copilot", "", &QuotaError{Details: "limit resets tomorrow"}, &runs},
+	}}
+	_, err := p.Run(context.Background(), Request{}, 0, accept)
+	if !errors.Is(err, ErrAllFailed) || !errors.Is(err, ErrQuotaExceeded) {
+		t.Errorf("error = %v, must preserve ErrAllFailed and ErrQuotaExceeded", err)
 	}
 }
 

@@ -102,6 +102,22 @@ func (u *Updater) save(s state) {
 	}
 }
 
+// LatestVersion fetches the current release directly, without the hourly cache.
+func (u *Updater) LatestVersion(ctx context.Context) (string, error) {
+	latest := u.Latest
+	if latest == nil {
+		latest = githubLatest
+	}
+	tag, err := latest(ctx)
+	if err != nil {
+		return "", fmt.Errorf("check latest Otto release: %w", err)
+	}
+	if _, ok := parse(tag); !ok {
+		return "", fmt.Errorf("GitHub returned an invalid Otto release tag %q", tag)
+	}
+	return tag, nil
+}
+
 // Available returns the newest release tag when it is newer than the running
 // version. The answer is cached for an hour. A version the user declined is
 // not offered again for a day unless force is set. Network failures are
