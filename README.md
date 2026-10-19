@@ -15,14 +15,26 @@ plans, with automatic fallback when one fails or hits a limit.
 - macOS (the background service uses launchd; `otto review` works anywhere Go and the CLIs run)
 - [GitHub CLI](https://cli.github.com) logged in: `gh auth login`
 - At least one engine CLI installed and logged in: `claude`, `codex`, `cursor-agent` or `opencode`
-- Go 1.25+ to build
+- Go 1.25+ only to build from source
 
 ## Install
 
 ```sh
-go install github.com/OvictorVieira/otto.code.reviewer/cmd/otto@latest
-otto setup
+curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh
 ```
+
+The installer downloads the release binary for your OS and CPU, verifies its checksum, installs the GitHub CLI
+with Homebrew if it is missing, logs you in to GitHub, lists the AI engines it found, and starts `otto setup`.
+
+```sh
+# a specific version, or skip the setup step
+curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh -s -- --version v0.1.0 --no-setup
+
+# remove Otto (binary, background service, cache); --purge also removes the config
+curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh -s -- --uninstall --purge
+```
+
+From source: `go install github.com/OvictorVieira/otto.code.reviewer/cmd/otto@latest`.
 
 `otto setup` asks which repositories to watch (pick from a checklist or choose all), which engines to use,
 the model and reasoning effort for each, the rotation strategy, the trigger phrase and the review language.
