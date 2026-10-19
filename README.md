@@ -1,115 +1,348 @@
 # Otto
 
-A local code reviewer for GitHub pull requests that uses the AI coding CLI you already pay for.
+[![ci](https://github.com/OvictorVieira/otto.code.reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/OvictorVieira/otto.code.reviewer/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/OvictorVieira/otto.code.reviewer)](https://github.com/OvictorVieira/otto.code.reviewer/releases)
+[![license: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE.md)
 
-Comment `/otto review` on a pull request. Otto, running on your own machine, checks the branch out in a
-disposable worktree, has your agent review it like a senior engineer (reading the spec, running the tests,
-probing edge cases), and posts the review as you: colored `P0`–`P3` badges, inline comments, a verdict,
-and what it verified.
+**Senior-level code review on your pull requests, running on your machine, with the AI you already pay for.**
 
-Works with **Claude Code**, **Codex**, **Cursor** and **OpenCode**. Rotate between them to spread usage across
-plans, with automatic fallback when one fails or hits a limit.
+Comment `/otto review` on a pull request. Otto checks the branch out, has your agent read the spec, run the tests and
+probe the edge cases, then posts the review as you: colored `P0`–`P3` findings on the exact lines, a verdict,
+and what it actually verified.
 
-## Requirements
+It works with **Claude Code**, **Codex**, **Cursor** and **OpenCode**. Use one, or rotate between them so no single
+plan hits its limit, with automatic fallback when one fails.
 
-- macOS (the background service uses launchd; `otto review` works anywhere Go and the CLIs run)
-- [GitHub CLI](https://cli.github.com) logged in: `gh auth login`
-- At least one engine CLI installed and logged in: `claude`, `codex`, `cursor-agent` or `opencode`
-- Go 1.25+ only to build from source
+## Installation (60-second setup)
 
-## Install
+### 1. Install Otto
 
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh
 ```
 
-The installer downloads the release binary for your OS and CPU, verifies its checksum, installs the GitHub CLI
-with Homebrew if it is missing, logs you in to GitHub, lists the AI engines it found, and starts `otto setup`.
+The installer downloads the binary for your OS and CPU, verifies its checksum, installs the GitHub CLI with
+Homebrew if it is missing, logs you in to GitHub, and tells you which AI engines it found.
 
-```sh
-# a specific version, or skip the setup step
-curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh -s -- --version v0.1.0 --no-setup
+### 2. Have at least one engine logged in
 
-# remove Otto (binary, background service, cache); --purge also removes the config
-curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh -s -- --uninstall --purge
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+claude auth login
 ```
 
-From source: `go install github.com/OvictorVieira/otto.code.reviewer/cmd/otto@latest`.
+Models: `opus`, `sonnet`, `haiku`. Effort: `low`, `medium`, `high`, `xhigh`, `max`.
 
-`otto setup` asks which repositories to watch (pick from a checklist or choose all), which engines to use,
-the model and reasoning effort for each, the rotation strategy, the trigger phrase and the review language.
+</details>
+
+<details>
+<summary><strong>Codex</strong></summary>
+
+```bash
+npm install -g @openai/codex
+codex login
+```
+
+Otto lists the models your Codex CLI knows about, and the effort levels each one supports.
+
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+```bash
+curl https://cursor.com/install -fsS | bash
+cursor-agent login
+```
+
+Cursor has no separate effort setting: pick a model whose name includes it, such as a `-thinking` variant.
+
+</details>
+
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+opencode auth login
+```
+
+Models use the `provider/model` format from `opencode models`. Effort maps to OpenCode's `--variant`.
+
+</details>
+
+### 3. Run `otto setup`
+
+The installer starts it for you. It asks:
+
+- which repositories to watch: pick from a checklist, or watch all of them (new ones included)
+- which engines to use, and the model and effort for each
+- whether to rotate between engines or always start with the first
+- whether reviews may run the project (install, test, start), or only read the code
+- the trigger phrase and the language of the comments
+
 It can then install Otto as a background service that starts at login.
 
-## Use
+### 4. Bam. Comment `/otto review` on a pull request.
 
-```sh
-# On GitHub: comment on any pull request in a watched repository
+Otto reacts 👀 within a minute, and posts the review when it is done.
+
+## What a review looks like
+
+Each finding lands on the changed line, like this:
+
+> **<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reserve stock atomically**
+>
+> Two orders for the last unit can both read `saldo = 1` and both succeed, because the check and the update run as
+> separate queries. Reproduced with two concurrent requests against the local server: stock went to `-1`. Use a
+> single `UPDATE ... SET saldo = saldo - 1 WHERE saldo >= 1` and treat zero affected rows as out of stock.
+
+And the summary tells you what was checked:
+
+> ### 💡 Otto Review
+> **Reviewed commit:** `9763fcd410`
+> **Engine:** `claude` · model `sonnet` · effort `high`
+> **Verdict:** patch is incorrect. Concurrent reservations can oversell.
+>
+> #### Verification
+> - ✅ `npm test` — 214 tests
+> - ❌ `concurrent reservation script` — stock went negative
+> - ⏭️ `docker compose up payments` — needs production credentials
+>
+> #### Spec
+> - 🟢 Reserve stock when the order is created (met)
+> - 🔴 Release the reservation when payment fails (missing)
+
+| Badge | Meaning |
+| --- | --- |
+| ![P0](https://img.shields.io/badge/P0-red?style=flat) | Drop everything. Blocks release or major usage. |
+| ![P1](https://img.shields.io/badge/P1-orange?style=flat) | Urgent. Fix in the next cycle. |
+| ![P2](https://img.shields.io/badge/P2-yellow?style=flat) | Normal. Fix eventually. |
+| ![P3](https://img.shields.io/badge/P3-lightgrey?style=flat) | Low. Nice to have. |
+
+## Using it
+
+**On GitHub**, in any repository Otto watches:
+
+```text
 /otto review
-/otto review focus on the payment retry logic
-
-# From the terminal, on any pull request you can access
-otto review https://github.com/owner/repo/pull/123
-otto review owner/repo#123 --engine codex --dry-run
-
-otto service status    # is the background watcher running?
-otto clean             # delete cached clones and worktrees
+/otto review focus on the payment retry logic and the new migration
 ```
 
-While a review runs, Otto reacts 👀 to the trigger comment. A clean review gets 👍. A failure gets 😕 and a
-comment explaining why.
+Anything after the trigger becomes extra instructions for the reviewer. Only comments written by you trigger a review.
 
-## How it works
+**From the terminal**, on any pull request you can access, watched or not. Handy at work, when you want a review
+without setting anything up in the repository:
 
-1. **Trigger.** The watcher polls the selected repositories every minute for a new comment starting with the
-   trigger phrase, written by you. Handled comments are remembered, so a restart never repeats or loses a request:
-   if the machine was off, pending requests are picked up when it comes back.
-2. **Checkout.** Each repository is cloned once into a cache. Every review gets its own worktree at the pull
-   request head, deleted when the review ends.
-3. **Review.** The engine gets one harness prompt (`internal/review/prompt.md`) that works the same on every CLI:
-   understand the spec (description and linked issues) and the repository rules (`AGENTS.md`, `CLAUDE.md`,
-   `CONTRIBUTING.md`...), install and run the tests, exercise the scenarios, then review on two separate axes:
-   **Spec** (missing requirements, scope creep, wrong behavior) and **Standards** (documented rules, plus a few
-   code smells as judgement calls). Over-engineering counts as a problem; trivial style does not.
-4. **Post.** The JSON answer is validated against the diff. Findings on changed lines become inline comments;
-   the rest go in the summary. The review is posted with your `gh` login.
+```bash
+otto review https://github.com/acme/api/pull/482
+otto review acme/api#482 --engine codex            # use only this engine
+otto review acme/api#482 --dry-run                 # print it, post nothing
+otto review acme/api#482 --focus "security only"
+```
 
-## Safety
+**Housekeeping:**
 
-- Engines run **inside the disposable worktree** with file-editing tools disabled, and the harness forbids commits,
-  pushes and touching remotes. With verification on, they can run commands (install, test, start the app).
-- Every process an engine starts is killed when the review ends. Worktrees are deleted, and leftovers from a crash
-  are swept on the next start.
-- Only comments written by you trigger a review. Running a pull request's code executes it on your machine:
-  watch repositories whose contributors you trust. Turn verification off in `otto setup` to only read the code.
+```bash
+otto service status      # is the background watcher running?
+otto service uninstall   # stop it
+otto clean               # delete cached clones and worktrees
+tail -f ~/Library/Logs/otto.log
+```
 
-## Configuration
+## Quick configurations
 
-`~/.config/otto/config.yaml` (set `OTTO_HOME` to use another directory):
+Everything lives in `~/.config/otto/config.yaml`. `otto setup` writes it, and you can edit it by hand.
+
+<details>
+<summary><strong>Just Claude Code</strong></summary>
 
 ```yaml
-trigger: /otto review
-language: English
-strategy: round-robin        # or: priority
-verify: true                 # run the project during reviews
-min_confidence: 0.3          # drop findings the engine is unsure about
-poll_interval: 1m0s
-lookback: 24h0m0s            # how far back to look the first time a repo is watched
-timeout: 30m0s
-repos:
-  all: false
-  selected: [owner/repo]
 engines:
   - name: claude
     model: sonnet
     effort: high
+```
+
+</details>
+
+<details>
+<summary><strong>Codex first, Claude only when Codex fails</strong></summary>
+
+```yaml
+strategy: priority
+engines:
   - name: codex
-    model: gpt-6-luna
     effort: high
+  - name: claude
+    model: opus
+```
+
+</details>
+
+<details>
+<summary><strong>Rotate across every plan you pay for</strong></summary>
+
+Each review starts with the next engine. If one is down or out of quota, the next one picks it up.
+
+```yaml
+strategy: round-robin
+engines:
+  - name: claude
+    model: sonnet
+  - name: codex
+  - name: cursor
+  - name: opencode
+    model: anthropic/claude-sonnet-4
+```
+
+</details>
+
+<details>
+<summary><strong>Read the code only, never run it</strong></summary>
+
+For repositories with outside contributors, or projects that need secrets to start.
+
+```yaml
+verify: false
+```
+
+</details>
+
+<details>
+<summary><strong>Reviews in Portuguese, a custom trigger, every repository</strong></summary>
+
+```yaml
+language: Brazilian Portuguese
+trigger: /revisa
+repos:
+  all: true
+```
+
+</details>
+
+<details>
+<summary><strong>Full reference</strong></summary>
+
+```yaml
+trigger: /otto review        # comment prefix that requests a review
+language: English            # language of titles and comments
+allowed_authors: [you]       # who may trigger; setup sets it to your GitHub login
+strategy: round-robin        # round-robin | priority
+verify: true                 # let the engine install, test and run the project
+min_confidence: 0.3          # drop findings the engine is unsure about
+poll_interval: 1m0s          # how often the watcher checks for new comments
+lookback: 24h0m0s            # how far back to look the first time a repo is watched
+timeout: 30m0s               # per review
+repos:
+  all: false
+  selected: [acme/api, acme/web]
+engines:
+  - name: claude             # claude | codex | cursor | opencode
+    model: sonnet            # empty = the CLI's default model
+    effort: high             # empty = the CLI's default effort
+```
+
+`OTTO_HOME` points Otto at another config directory.
+
+</details>
+
+## Why Otto exists
+
+### #1: Good reviewers only look at the diff
+
+**The problem.** Most AI reviewers read the patch and guess. They never notice that the tests fail, that the
+migration does not run, or that the feature skips half of what the issue asked for.
+
+**The fix.** Otto reviews like a senior colleague who pulls the branch: it reads the description and the linked
+issues as the spec, follows the repository's own rules (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`), installs,
+runs the tests, exercises the scenarios and the edge cases, and tells you what it ran. Spec and code standards are
+reviewed as two separate axes, so a change cannot pass one and hide failing the other.
+
+### #2: Review bots drown you in noise
+
+**The problem.** Style nits, speculative "this might break something", and suggestions to add three layers of
+abstraction.
+
+**The fix.** A finding has to be real, introduced by this pull request, and something the author would want to
+fix. Over-engineering counts as a problem; trivial style does not. The rubric is adapted from the one OpenAI Codex
+uses.
+
+### #3: Your review tool is tied to one vendor
+
+**The problem.** The reviewer you like comes with one subscription, and its limits.
+
+**The fix.** Otto drives whatever CLI you already pay for, through one prompt that behaves the same on every engine.
+Switch, rotate or fall back without changing how reviews look.
+
+### #4: Running someone's branch leaves a mess
+
+**The problem.** Dependencies, dev servers and scratch files pile up after every local review.
+
+**The fix.** Each review gets a disposable worktree. Every process the engine starts is killed when it finishes, the
+worktree is deleted, and leftovers from a crash are swept on the next start.
+
+## How it works
+
+```text
+/otto review comment
+        |
+        v
+  watcher (every minute, on your machine)  --- remembers handled comments,
+        |                                      catches up after a reboot
+        v
+  disposable worktree at the PR head
+        |
+        v
+  engine: claude | codex | cursor | opencode   (rotation + fallback)
+    read spec and repo rules -> install -> test -> probe edge cases
+        |
+        v
+  JSON answer -> validated against the diff -> review posted with your gh login
+        |
+        v
+  processes killed, worktree deleted
+```
+
+## Safety
+
+- Engines run inside the disposable worktree with file-editing tools disabled. The prompt forbids commits, pushes
+  and touching remotes. Nothing is ever pushed.
+- With `verify: true` the engine runs the pull request's code on your machine. Watch repositories whose contributors
+  you trust, or set `verify: false`.
+- Otto never stores a GitHub token: it uses your `gh` login.
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OvictorVieira/otto.code.reviewer/main/install.sh | sh -s -- --uninstall --purge
+```
+
+Removes the binary, the background service and the cache. `--purge` also removes `~/.config/otto`.
+Other options: `--version v0.1.0` installs a specific release, `--no-setup` skips the setup step.
+
+## Requirements
+
+- macOS for the background service (`otto review` also runs on Linux)
+- [GitHub CLI](https://cli.github.com) and `git`
+- One of: Claude Code, Codex, Cursor or OpenCode
+
+GitLab and other hosts are not supported yet.
+
+## Development
+
+```bash
+go test ./...                 # behavior tests for the review and watch flows
+go run ./cmd/otto review acme/api#1 --dry-run
+git tag v0.2.0 && git push origin v0.2.0   # CI builds and publishes the release
 ```
 
 ## License
 
-[Functional Source License 1.1, ALv2 Future License](LICENSE.md): free to use, modify and self-host;
-you may not offer it as a competing commercial product. Each release becomes Apache 2.0 two years after it is published.
+[Functional Source License 1.1, ALv2 Future License](LICENSE.md). You can use, modify and self-host Otto, including
+at work. You cannot sell it as a competing product. Each release becomes Apache 2.0 two years after it is published.
 
 The review rubric is adapted from [OpenAI Codex](https://github.com/openai/codex) (Apache-2.0). See [NOTICE](NOTICE).
