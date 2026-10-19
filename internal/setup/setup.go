@@ -14,6 +14,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/picker"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/service"
 )
 
@@ -179,18 +180,21 @@ func chooseEngines(cfg *config.Config) error {
 	return nil
 }
 
-// pickModel shows the engine's live model list (searchable) and returns the
-// chosen model with the reasoning levels it accepts.
+// pickModel shows the engine's live model list in the picker and returns the
+// chosen model with the reasoning levels it accepts. Esc keeps the current one.
 func pickModel(name, current string) (string, []string, error) {
 	fmt.Printf("Loading %s models...\n", name)
 	catalog := engine.Catalog(name)
 
-	free := 0
-	options := []huh.Option[string]{huh.NewOption("CLI default", cliDefault)}
+	items := []picker.Item{{Value: cliDefault, Title: "CLI default", Hint: "whatever " + name + " is configured to use", Group: "Default"}}
 	efforts := map[string][]string{cliDefault: engine.Efforts(name)}
-	known := false
+	free, known := 0, false
 	for _, m := range catalog {
-		options = append(options, huh.NewOption(m.Label, m.ID))
+		hint := m.Note
+		if m.ID != m.Name {
+			hint = strings.TrimSpace(m.ID + " " + m.Note)
+		}
+		items = append(items, picker.Item{Value: m.ID, Title: m.Name, Hint: hint, Group: m.Group, Tag: m.Tag})
 		efforts[m.ID] = m.Efforts
 		known = known || m.ID == current
 		if m.Free {
@@ -198,25 +202,25 @@ func pickModel(name, current string) (string, []string, error) {
 		}
 	}
 	if current != "" && !known {
-		options = append(options, huh.NewOption(current+" (current)", current))
+		items = append(items, picker.Item{Value: current, Title: current, Group: "Current", Tag: "current"})
 		efforts[current] = engine.Efforts(name)
 	}
-	options = append(options, huh.NewOption("Type a model id…", custom))
+	items = append(items, picker.Item{Value: custom, Title: "Type a model id…", Group: "Other"})
 
-	title := fmt.Sprintf("%s: model", name)
-	switch {
-	case len(catalog) == 0:
-		title += " (the CLI did not list any; pick its default or type one)"
-	case free > 0:
-		title += fmt.Sprintf(" (%d available, %d free listed first · press / to search)", len(catalog), free)
-	default:
-		title += fmt.Sprintf(" (%d available · press / to search)", len(catalog))
+	footer := fmt.Sprintf("%d models", len(catalog))
+	if free > 0 {
+		footer += fmt.Sprintf(" · %d free", free)
+	}
+	if len(catalog) == 0 {
+		footer = name + " did not list any model"
 	}
 
-	model := current
-	if err := ask(huh.NewSelect[string]().Title(title).Options(options...).
-		Height(min(len(options)+2, 18)).Value(&model)); err != nil {
+	model, ok, err := picker.Run(picker.Options{Title: name + " · select model", Items: items, Selected: current, Footer: footer})
+	if err != nil {
 		return "", nil, err
+	}
+	if !ok {
+		return current, efforts[current], nil
 	}
 	if model != custom {
 		return model, efforts[model], nil
@@ -232,18 +236,21 @@ func pickEffort(name, model string, levels []string, current string) (string, er
 	if len(levels) == 0 {
 		return "", nil
 	}
-	options := []huh.Option[string]{huh.NewOption("CLI default", cliDefault)}
+	items := []picker.Item{{Value: cliDefault, Title: "Default", Hint: "the CLI's default effort"}}
 	for _, l := range levels {
-		options = append(options, huh.NewOption(l, l))
+		items = append(items, picker.Item{Value: l, Title: l})
 	}
-	effort := current
-	if !slices.Contains(levels, effort) {
-		effort = cliDefault
+	if !slices.Contains(levels, current) {
+		current = cliDefault
 	}
-	title := name + ": reasoning effort"
+	title := name + " · select effort"
 	if model != "" {
 		title += " for " + model
 	}
-	err := ask(huh.NewSelect[string]().Title(title).Options(options...).Value(&effort))
-	return effort, err
+	effort, ok, err := picker.Run(picker.Options{Title: title, Items: items, Selected: current,
+		Footer: fmt.Sprintf("%d levels", len(levels))})
+	if err != nil || !ok {
+		return current, err
+	}
+	return effort, nil
 }

@@ -17,7 +17,11 @@ import (
 // at setup time, so new models show up without an Otto release.
 type Model struct {
 	ID      string
-	Label   string
+	Label   string   // one-line description with id, name and price
+	Name    string   // human name, e.g. "Claude Sonnet 4"
+	Group   string   // section in the picker: "Free", a provider, the engine
+	Tag     string   // right-hand note: "Free", a price, "always latest"
+	Note    string   // short description
 	Efforts []string // reasoning levels this model accepts; empty = none to pick
 	Free    bool
 }
@@ -125,7 +129,8 @@ func parseClaudeHelp(help string) []Model {
 		if note == "" {
 			note = "Claude " + a
 		}
-		models = append(models, Model{ID: a, Label: a + " — " + note + " (always the latest)", Efforts: efforts})
+		models = append(models, Model{ID: a, Label: a + " — " + note + " (always the latest)",
+			Name: a, Group: "Claude", Tag: "always latest", Note: note, Efforts: efforts})
 	}
 	return models
 }
@@ -195,7 +200,11 @@ func parseCodexCache(b []byte) []Model {
 		for _, l := range m.Levels {
 			efforts = append(efforts, l.Effort)
 		}
-		models = append(models, Model{ID: m.Slug, Label: label, Efforts: efforts})
+		name := m.DisplayName
+		if name == "" {
+			name = m.Slug
+		}
+		models = append(models, Model{ID: m.Slug, Label: label, Name: name, Group: "Codex", Note: m.Description, Efforts: efforts})
 	}
 	return models
 }
@@ -208,7 +217,8 @@ func parseCursor(out string) []Model {
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(strings.TrimLeft(line, "-* "))
 		if len(f) > 0 && modelID.MatchString(f[0]) {
-			models = append(models, Model{ID: f[0], Label: strings.Join(f, " ")})
+			models = append(models, Model{ID: f[0], Label: strings.Join(f, " "), Name: f[0], Group: "Cursor",
+				Note: strings.Join(f[1:], " ")})
 		}
 	}
 	return models
@@ -250,10 +260,12 @@ func parseOpencode(out string) []Model {
 			continue
 		}
 
-		m := Model{ID: e.ProviderID + "/" + e.ID, Free: e.Cost.Input == 0 && e.Cost.Output == 0}
+		m := Model{ID: e.ProviderID + "/" + e.ID, Name: e.Name, Free: e.Cost.Input == 0 && e.Cost.Output == 0}
 		price := "free"
+		m.Group, m.Tag = "Free", "Free"
 		if !m.Free {
 			price = fmt.Sprintf("$%g in / $%g out per 1M tokens", e.Cost.Input, e.Cost.Output)
+			m.Group, m.Tag = e.ProviderID, fmt.Sprintf("$%g / $%g", e.Cost.Input, e.Cost.Output)
 		}
 		m.Label = fmt.Sprintf("%s — %s · %s", m.ID, e.Name, price)
 		for v := range e.Variants {
@@ -266,6 +278,9 @@ func parseOpencode(out string) []Model {
 	sort.SliceStable(models, func(i, j int) bool {
 		if models[i].Free != models[j].Free {
 			return models[i].Free
+		}
+		if models[i].Group != models[j].Group {
+			return models[i].Group < models[j].Group
 		}
 		return models[i].ID < models[j].ID
 	})
