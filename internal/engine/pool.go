@@ -45,6 +45,29 @@ func (e allFailedError) Unwrap() []error {
 	return append([]error{ErrAllFailed}, e.failures...)
 }
 
+// followup asks an engine that finished its analysis without giving the answer to give it now.
+const followup = "Reply now with ONLY the final review as the single JSON object described in the instructions. " +
+	"Do not ask for confirmation, do not add a plan or any other text, and do not use tools."
+
+// askForTheAnswer gives an engine that can continue its session one chance to answer after its
+// output was rejected, for example when a model ends with "confirm and I will write the JSON".
+// Otherwise, or when the follow-up fails too, the original rejection stands.
+func askForTheAnswer(ctx context.Context, e Engine, req Request, rejected error, accept func(string) error) (string, error) {
+	c, ok := e.(Continuer)
+	if !ok || !c.CanContinue() || ctx.Err() != nil {
+		return "", rejected
+	}
+	req.Followup = followup
+	text, err := e.Run(ctx, req)
+	if err != nil {
+		return "", rejected
+	}
+	if err := accept(text); err != nil {
+		return "", rejected
+	}
+	return text, nil
+}
+
 // Run starts at cursor (round-robin) or at 0 (priority). accept validates the
 // answer; a rejected answer counts as a failure and triggers the fallback.
 func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(string) error) (Outcome, error) {
@@ -67,7 +90,9 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 		}
 		text, err := e.Run(ctx, req)
 		if err == nil {
-			err = accept(text)
+			if err = accept(text); err != nil {
+				text, err = askForTheAnswer(ctx, e, req, err, accept)
+			}
 		}
 		if err != nil {
 			failure := &EngineError{Name: e.Name(), Err: err}

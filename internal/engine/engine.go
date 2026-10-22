@@ -32,6 +32,9 @@ type Request struct {
 	OutFile  string // scratch file the engine may write its answer to
 	Verify   bool   // allow running commands (install, test, start) inside Dir
 	Progress func(string)
+	// Followup, when set, continues the engine's last session in Dir with this message instead of
+	// starting over: used to ask for the answer an engine finished its work without giving.
+	Followup string
 }
 
 // Engine runs a prompt and returns the final answer text.
@@ -39,6 +42,9 @@ type Engine interface {
 	Name() string
 	Run(ctx context.Context, req Request) (string, error)
 }
+
+// Continuer is an engine that can continue its last session with a follow-up message.
+type Continuer interface{ CanContinue() bool }
 
 // Known lists the supported engines in display order.
 var Known = []string{"claude", "codex", "cursor", "opencode", "copilot"}
@@ -125,6 +131,11 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		if s.Effort != "" {
 			c.Args = append(c.Args, "--variant", s.Effort)
 		}
+		if req.Followup != "" {
+			c.Stdin = ""
+			c.Args = append(c.Args, "--continue", "--", req.Followup)
+			break
+		}
 		c.Args = append(c.Args, "--",
 			"Follow the code review instructions in the input exactly and answer only with the JSON it asks for.")
 	case "copilot":
@@ -185,6 +196,9 @@ type CLI struct{ Spec Spec }
 
 // Name implements Engine.
 func (e CLI) Name() string { return e.Spec.Name }
+
+// CanContinue implements Continuer: opencode keeps the session, so a follow-up costs a moment.
+func (e CLI) CanContinue() bool { return e.Spec.Name == "opencode" }
 
 // Run implements Engine.
 func (e CLI) Run(ctx context.Context, req Request) (string, error) {
