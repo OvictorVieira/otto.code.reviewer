@@ -141,7 +141,8 @@ func (w *wizard) advance(dir int) tea.Cmd {
 	w.dir = dir
 	n := w.i + dir
 	if n < 0 {
-		n, w.dir = 0, 1
+		w.quit = true // esc on the first step leaves the setup, like ctrl+c, saving nothing
+		return tea.Quit
 	}
 	if n >= len(w.steps) {
 		w.finished = true
@@ -278,7 +279,7 @@ func (w *wizard) stepEngines() step {
 		}
 		m := picker.New(picker.Options{
 			Title: "Step 2 · Which AI engines can Otto use? (space selects, enter continues)",
-			Items: items, Multi: true, Checked: checked, Footer: "they run on your own subscriptions",
+			Items: items, Multi: true, Checked: checked, Footer: "space toggles · enter keeps the checked ones, or picks the row you are on",
 		})
 		return m, func(vals []string) *nested {
 			w.cfg.Engines = nil

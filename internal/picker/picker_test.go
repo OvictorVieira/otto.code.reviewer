@@ -149,6 +149,7 @@ func TestMultiSelectTogglesWithSpaceAndConfirmsWithEnter(t *testing.T) {
 	m := New(Options{Title: "Repos", Items: items, Multi: true, Checked: []string{"openai/gpt-5"}})
 	m = send(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
+	m = send(m, tea.KeyMsg{Type: tea.KeyHome})                                 // the cursor starts on the pre-checked gpt-5; go to the top
 	m = send(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeySpace}) // check item 2
 	m = send(m, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeySpace}) // check item 3
 	m = send(m, tea.KeyMsg{Type: tea.KeySpace})                                // uncheck item 3 again
@@ -256,5 +257,63 @@ func TestInputTypesAndSubmits(t *testing.T) {
 	in = next.(*InputModel)
 	if v, a := in.Value(), in.Action(); v != "abc" || a != Picked {
 		t.Errorf("value %q action %v", v, a)
+	}
+}
+
+var engines = []Item{
+	{Value: "claude", Title: "claude"},
+	{Value: "codex", Title: "codex"},
+	{Value: "cursor", Title: "cursor"},
+	{Value: "opencode", Title: "opencode"},
+}
+
+func startMulti(t *testing.T, checked ...string) *Model {
+	t.Helper()
+	m := New(Options{Title: "Engines", Items: engines, Multi: true, Checked: checked})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return next.(*Model)
+}
+
+var (
+	down  = tea.KeyMsg{Type: tea.KeyDown}
+	enter = tea.KeyMsg{Type: tea.KeyEnter}
+	space = tea.KeyMsg{Type: tea.KeySpace}
+)
+
+func TestMultiCursorStartsOnTheFirstCheckedItem(t *testing.T) {
+	m := startMulti(t, "codex", "opencode")
+	if got := m.Current().Value; got != "codex" {
+		t.Errorf("cursor on %q, want the first checked item", got)
+	}
+}
+
+func TestMultiEnterKeepsTheCheckedItemsWhenNothingWasChanged(t *testing.T) {
+	m := send(startMulti(t, "codex"), enter)
+	if got := m.Values(); len(got) != 1 || got[0] != "codex" {
+		t.Errorf("values = %v, want the pre-checked codex kept", got)
+	}
+}
+
+func TestMultiEnterOnAnUncheckedItemPicksThatItemInsteadOfThePreChecked(t *testing.T) {
+	// Regression: with codex pre-checked from the saved config, arrowing to opencode and pressing
+	// enter confirmed only codex and ignored the item the user was on.
+	m := send(startMulti(t, "codex"), down, down, enter)
+	if got := m.Values(); len(got) != 1 || got[0] != "opencode" {
+		t.Errorf("values = %v, want only the item under the cursor", got)
+	}
+}
+
+func TestMultiSpaceAddsToTheCheckedItemsAndEnterKeepsBoth(t *testing.T) {
+	m := send(startMulti(t, "codex"), down, down, space, enter)
+	got := m.Values()
+	if len(got) != 2 || got[0] != "codex" || got[1] != "opencode" {
+		t.Errorf("values = %v, want codex and opencode", got)
+	}
+}
+
+func TestMultiUncheckingEverythingThenEnterPicksTheCursorItem(t *testing.T) {
+	m := send(startMulti(t, "codex"), space, enter)
+	if got := m.Values(); len(got) != 1 || got[0] != "codex" {
+		t.Errorf("values = %v, want enter to pick the item under the cursor when nothing is checked", got)
 	}
 }

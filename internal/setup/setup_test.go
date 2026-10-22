@@ -318,8 +318,8 @@ func TestAddingAnotherEngineKeepsTheOneAlreadyConfiguredAndItsModel(t *testing.T
 	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
 	d := startWith(t, cfg, catalogs)
 
-	d.key(tea.KeyEnter)                                        // repos
-	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeySpace) // claude, codex, cursor, opencode: also check opencode
+	d.key(tea.KeyEnter)                           // repos
+	d.key(tea.KeyDown, tea.KeyDown, tea.KeySpace) // the cursor starts on codex: cursor, opencode, then also check opencode
 	d.key(tea.KeyEnter)
 
 	var names []string
@@ -331,5 +331,46 @@ func TestAddingAnotherEngineKeepsTheOneAlreadyConfiguredAndItsModel(t *testing.T
 	}
 	if got := d.w.cfg.Engines[0]; got.Model != "gpt-6-luna" || got.Effort != "medium" {
 		t.Errorf("codex = %+v, want its saved model and effort kept", got)
+	}
+}
+
+func TestWithCodexAlreadyConfiguredPickingOpencodeOpensOpencodeNotCodex(t *testing.T) {
+	// Regression: codex was pre-checked from the saved config, so arrowing to opencode and
+	// pressing enter opened codex's model list.
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	d := startWith(t, cfg, catalogs)
+
+	d.key(tea.KeyEnter)                           // repos
+	d.key(tea.KeyDown, tea.KeyDown, tea.KeyEnter) // cursor starts on codex: cursor, opencode
+
+	if got := d.w.cfg.Engines; len(got) != 1 || got[0].Name != "opencode" {
+		t.Fatalf("engines = %+v, want only opencode", got)
+	}
+	if s := d.screen(); !strings.Contains(s, "opencode · select model") || strings.Contains(s, "codex · select") {
+		t.Errorf("the next screen must be opencode's model list:\n%s", s)
+	}
+}
+
+func TestPressingEnterOnTheEnginesStepKeepsTheConfiguredEngine(t *testing.T) {
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	d := startWith(t, cfg, catalogs)
+
+	d.key(tea.KeyEnter, tea.KeyEnter) // repos, then engines without touching anything
+
+	if got := d.w.cfg.Engines; len(got) != 1 || got[0].Name != "codex" || got[0].Model != "gpt-6-luna" {
+		t.Fatalf("engines = %+v, want the configured codex kept as it was", got)
+	}
+}
+
+func TestEscOnTheFirstStepLeavesTheSetupWithoutSaving(t *testing.T) {
+	// Regression: esc on step 1 reopened step 1 instead of leaving.
+	d := start(t)
+
+	d.key(tea.KeyEsc)
+
+	if !d.w.quit || d.w.finished {
+		t.Errorf("quit = %v, finished = %v: esc on the first step must leave the setup unfinished", d.w.quit, d.w.finished)
 	}
 }

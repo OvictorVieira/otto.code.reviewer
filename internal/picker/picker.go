@@ -81,6 +81,9 @@ type Model struct {
 	height  int
 	chosen  string
 	action  Action
+	// touched is set once the user checks or unchecks something, so enter knows whether they
+	// only moved the cursor (the row under it is the pick) or built a selection of their own.
+	touched bool
 }
 
 // New builds a screen focused on the selected value.
@@ -98,6 +101,14 @@ func New(opts Options) *Model {
 	for i, idx := range m.matches {
 		if opts.Items[idx].Value == opts.Selected {
 			m.cursor = i
+		}
+	}
+	if opts.Multi && opts.Selected == "" {
+		for i, idx := range m.matches {
+			if m.checked[opts.Items[idx].Value] {
+				m.cursor = i // start on the first checked row, so enter alone keeps what was configured
+				break
+			}
 		}
 	}
 	m.ensureVisible()
@@ -201,6 +212,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) confirm() tea.Cmd {
 	if m.opts.Multi {
+		if !m.touched && len(m.checked) > 0 && len(m.matches) > 0 {
+			// Items came pre-checked and the user only moved the cursor: the row they stopped on
+			// is their pick, not the pre-checked ones they never looked at.
+			if row := m.opts.Items[m.matches[m.cursor]].Value; !m.checked[row] {
+				m.checked = map[string]bool{row: true}
+			}
+		}
 		if len(m.checked) == 0 && !m.opts.AllowEmpty {
 			// Nothing checked yet: enter picks the item under the cursor, the
 			// way it does in a single-choice list.
@@ -223,6 +241,7 @@ func (m *Model) toggle() {
 	if len(m.matches) == 0 {
 		return
 	}
+	m.touched = true
 	v := m.opts.Items[m.matches[m.cursor]].Value
 	if m.checked[v] {
 		delete(m.checked, v)
@@ -232,6 +251,7 @@ func (m *Model) toggle() {
 }
 
 func (m *Model) toggleAll() {
+	m.touched = true
 	all := true
 	for _, idx := range m.matches {
 		all = all && m.checked[m.opts.Items[idx].Value]
