@@ -75,6 +75,9 @@ func TestOpencodeCommandUsesPlanAgentAndVariant(t *testing.T) {
 	if c.PromptFile == "" || !slices.Contains(c.Args, c.PromptFile) {
 		t.Errorf("opencode must attach the prompt as a file: %+v", c)
 	}
+	if !strings.HasPrefix(c.PromptFile, "/wt/") {
+		t.Errorf("the prompt file %q must live inside the checkout /wt: opencode refuses to read outside the project directory", c.PromptFile)
+	}
 }
 
 func TestCopilotCommandUsesHeadlessJSONAndRestrictsWrites(t *testing.T) {

@@ -111,7 +111,8 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		}
 		c.Args = append(c.Args, req.Prompt)
 	case "opencode":
-		c.PromptFile = req.OutFile + ".prompt.md"
+		// Inside the checkout: opencode will not read a file outside the project directory.
+		c.PromptFile = filepath.Join(req.Dir, ".otto-review-prompt.md")
 		if req.Verify {
 			c.Args = []string{"run", "--auto"}
 		} else {

@@ -99,6 +99,8 @@ func TestFailuresRecognizeWhatEachCLIReportsWhenItStops(t *testing.T) {
 		{"cursor limit", "cursor-agent: ActionRequiredError: You've hit your usage limit", FailQuota},
 		{"repeated retries", "cursor-agent: stopped after repeated retries: Connection lost, reconnecting (attempt 3/10)", FailBusy},
 		{"service unavailable", "copilot: 503 Service Unavailable", FailBusy},
+		{"opencode permission rejected", "opencode: reported an error: Error: The user rejected permission to use this specific tool call.", FailPermission},
+		{"permission auto-rejected", "opencode: permission requested: external_directory (/tmp/*); auto-rejecting", FailPermission},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

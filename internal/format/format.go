@@ -170,7 +170,7 @@ var failureWords = map[bool]struct {
 		reset:      " (informado pelo provedor: %s)",
 		kinds: map[engine.FailureKind]string{
 			engine.FailQuota: "limite de uso atingido", engine.FailAuth: "não está autenticado",
-			engine.FailMissing: "não está instalado ou não foi encontrado", engine.FailBusy: "o provedor está sobrecarregado ou o motor tentou de novo várias vezes sem sucesso", engine.FailNetwork: "falha de conexão",
+			engine.FailMissing: "não está instalado ou não foi encontrado", engine.FailBusy: "o provedor está sobrecarregado ou o motor tentou de novo várias vezes sem sucesso", engine.FailPermission: "não teve permissão para ler um arquivo de que precisava", engine.FailNetwork: "falha de conexão",
 			engine.FailTimeout: "demorou demais e foi interrompido", engine.FailInvalid: "respondeu em um formato que o Otto não conseguiu usar",
 			engine.FailOther: "falhou por um motivo inesperado",
 		},
@@ -183,7 +183,7 @@ var failureWords = map[bool]struct {
 		reset:      " (reported by the provider: %s)",
 		kinds: map[engine.FailureKind]string{
 			engine.FailQuota: "usage limit reached", engine.FailAuth: "not signed in",
-			engine.FailMissing: "not installed or not found", engine.FailBusy: "the provider is overloaded or the engine kept retrying without success", engine.FailNetwork: "connection problem",
+			engine.FailMissing: "not installed or not found", engine.FailBusy: "the provider is overloaded or the engine kept retrying without success", engine.FailPermission: "was not allowed to read a file it needed", engine.FailNetwork: "connection problem",
 			engine.FailTimeout: "took too long and was stopped", engine.FailInvalid: "answered in a format Otto could not use",
 			engine.FailOther: "failed for an unexpected reason",
 		},

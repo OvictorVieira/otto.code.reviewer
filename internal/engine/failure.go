@@ -13,14 +13,15 @@ import (
 type FailureKind string
 
 const (
-	FailQuota   FailureKind = "quota"
-	FailAuth    FailureKind = "auth"
-	FailMissing FailureKind = "missing"
-	FailBusy    FailureKind = "busy"
-	FailNetwork FailureKind = "network"
-	FailTimeout FailureKind = "timeout"
-	FailInvalid FailureKind = "invalid"
-	FailOther   FailureKind = "other"
+	FailQuota      FailureKind = "quota"
+	FailAuth       FailureKind = "auth"
+	FailMissing    FailureKind = "missing"
+	FailBusy       FailureKind = "busy"
+	FailPermission FailureKind = "permission"
+	FailNetwork    FailureKind = "network"
+	FailTimeout    FailureKind = "timeout"
+	FailInvalid    FailureKind = "invalid"
+	FailOther      FailureKind = "other"
 )
 
 // EngineFailure is what is safe to tell the pull request about one failed engine:
@@ -75,6 +76,8 @@ func classify(e *EngineError) EngineFailure {
 		failure.ResetAt = resetNote(quota, text)
 	case containsAny(lower, "not logged in", "please run /login", "log in", "login required", "unauthorized", "authentication", "not authenticated", "invalid api key", "invalid x-api-key", "token has expired", "invalid authentication"):
 		failure.Kind = FailAuth
+	case containsAny(lower, "rejected permission", "auto-rejecting", "permission denied"):
+		failure.Kind = FailPermission
 	case containsAny(lower, "executable file not found"):
 		failure.Kind = FailMissing
 	case containsAny(lower, "overloaded", "service unavailable", "repeated retries", "at capacity"):

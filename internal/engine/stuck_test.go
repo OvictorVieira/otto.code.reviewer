@@ -89,3 +89,28 @@ func TestOpencodeAnswerThatMentionsAnErrorIsNotTreatedAsAFailure(t *testing.T) {
 		t.Fatalf("out = %q, err = %v, want the review text from stdout", out, err)
 	}
 }
+
+func TestOpencodeReadsTheInstructionsFromInsideTheCheckoutAndTheFileIsRemovedAfterwards(t *testing.T) {
+	// Regression: the instructions file was written to the temp directory, outside the project.
+	// opencode's plan agent cannot read outside it (external_directory is auto-rejected when it
+	// runs unattended), so every review ended with "The user rejected permission".
+	fakeCLI(t, "opencode", `dir=""; file=""
+while [ $# -gt 0 ]; do
+  case "$1" in --dir) dir="$2"; shift;; -f) file="$2"; shift;; esac
+  shift
+done
+case "$file" in
+  "$dir"/*) if [ -f "$file" ]; then printf 'review done'; else echo "Error: instructions file is missing" >&2; fi;;
+  *) printf 'Error: The user rejected permission to use this specific tool call.\n' >&2; sleep 5;;
+esac`)
+	checkout := t.TempDir()
+
+	out, err := CLI{Spec: Spec{Name: "opencode"}}.Run(context.Background(), Request{Prompt: "review this", Dir: checkout, OutFile: filepath.Join(t.TempDir(), "out")})
+
+	if err != nil || out != "review done" {
+		t.Fatalf("out = %q, err = %v, want the engine to read the instructions inside the checkout", out, err)
+	}
+	if entries, _ := os.ReadDir(checkout); len(entries) != 0 {
+		t.Errorf("the instructions file must be removed from the checkout after the run, found %d entries", len(entries))
+	}
+}
