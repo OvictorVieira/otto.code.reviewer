@@ -369,6 +369,9 @@ func (w *wizard) stepModel(i int) step {
 			if free > 0 {
 				footer += fmt.Sprintf(" · %d free", free)
 			}
+			if slices.ContainsFunc(catalog, func(m engine.Model) bool { return m.Tier != "" }) {
+				footer += " · Recommended is a pick, not a benchmark"
+			}
 			if len(catalog) == 0 {
 				footer = spec.Name + " did not list any model"
 			}

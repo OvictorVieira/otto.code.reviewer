@@ -108,6 +108,13 @@ service) and come back to the menu after each change. Choose **Save and exit** t
 to discard them. Only the very first setup walks through everything. A running Otto reloads the saved config by itself
 after the review in progress.
 
+**Reading the model list.** The models are read live from each engine, so new ones appear without an Otto release. At the
+top is a **Recommended** section with one model per size of review (light for small or quick pull requests, medium for
+everyday ones, heavy for large or risky changes such as auth, payments or concurrency), then every maker (Anthropic,
+OpenAI, DeepSeek, Google...) in alphabetical order, free models first and then from the cheapest to the dearest. Prices are
+shown only when the engine's own catalog gives one. **The recommendations are the maintainer's judgment, not a benchmark**;
+they live in one table, `internal/engine/recommended.go`, with the reason for each pick.
+
 **Fallback models.** Under **Models and fallback** the models are a list in the order they are tried. Add another model
 (from another engine, or another model of the same engine), move it up or down, change its model or effort, or remove
 it. With the **Priority** order the first model does every review and the others are used only when it fails; with

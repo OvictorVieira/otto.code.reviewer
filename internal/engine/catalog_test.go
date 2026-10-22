@@ -107,7 +107,8 @@ func TestCopilotCatalogIncludesPremiumModelsAndCanBeCustomized(t *testing.T) {
 	var ids []string
 	for _, model := range models {
 		ids = append(ids, model.ID)
-		if model.Tag != "Premium" || !strings.Contains(model.Note, "access depends") {
+		premium := model.Tag == "Premium" || (model.Tier != "" && strings.HasSuffix(model.Tag, "· Premium"))
+		if !premium || !strings.Contains(model.Note, "access depends") {
 			t.Errorf("model should explain premium access limits: %+v", model)
 		}
 	}

@@ -248,3 +248,34 @@ func TestEverythingRunsTheFullSetupAndComesBackToTheMenu(t *testing.T) {
 	d.key(tea.KeyEnter) // repos
 	d.shows("Which AI engines")
 }
+
+func TestTheModelListShowsRecommendedOnTopAndSaysItIsAJudgmentNotABenchmark(t *testing.T) {
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "codex"}}
+	catalog := map[string][]engine.Model{"codex": engine.OrderModels("codex", []engine.Model{
+		{ID: "gpt-5.6-terra", Name: "GPT-5.6-Terra", Group: "Codex"},
+		{ID: "gpt-6-luna", Name: "GPT-6-Luna", Group: "Codex"},
+	})}
+	d := startWith(t, cfg, catalog)
+
+	d.key(tea.KeyEnter) // repos
+	d.key(tea.KeyEnter) // engines
+
+	d.shows("codex · select model", "Recommended", "Recommended · medium", "everyday PRs", "not a benchmark")
+	s := d.screen()
+	if strings.Index(s, "GPT-6-Luna") > strings.Index(s, "GPT-5.6-Terra") {
+		t.Errorf("the recommended model must be listed before the others:\n%s", s)
+	}
+}
+
+func TestAModelListWithNothingRecommendedDoesNotTalkAboutRecommendations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "opencode"}}
+	d := startWith(t, cfg, catalogs)
+
+	d.key(tea.KeyEnter, tea.KeyEnter)
+
+	if s := d.screen(); strings.Contains(s, "not a benchmark") {
+		t.Errorf("no recommendations, so no note about them:\n%s", s)
+	}
+}

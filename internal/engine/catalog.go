@@ -24,10 +24,20 @@ type Model struct {
 	Note    string   // short description
 	Efforts []string // reasoning levels this model accepts; empty = none to pick
 	Free    bool
+
+	Brand string // who made the model: the section it sits in unless it is recommended
+	Tier  Tier   // the size of review it is recommended for; empty when it is not recommended
+	// The price per million tokens when the catalog gives one. PriceKnown is false when it does not,
+	// and the price is then never guessed.
+	InUSD, OutUSD float64
+	PriceKnown    bool
 }
 
-// Catalog lists the models available to the user for an engine.
-func Catalog(name string) []Model {
+// Catalog lists the models available to the user for an engine, in reading order: the recommended
+// ones first, then each brand with its cheapest models first.
+func Catalog(name string) []Model { return OrderModels(name, catalog(name)) }
+
+func catalog(name string) []Model {
 	switch name {
 	case "claude":
 		help, _ := command(20*time.Second, "claude", "--help")
@@ -302,7 +312,8 @@ func parseOpencode(out string) []Model {
 			continue
 		}
 
-		m := Model{ID: e.ProviderID + "/" + e.ID, Name: e.Name, Free: e.Cost.Input == 0 && e.Cost.Output == 0}
+		m := Model{ID: e.ProviderID + "/" + e.ID, Name: e.Name, Free: e.Cost.Input == 0 && e.Cost.Output == 0,
+			InUSD: e.Cost.Input, OutUSD: e.Cost.Output, PriceKnown: true}
 		price := "free"
 		m.Group, m.Tag = "Free", "Free"
 		if !m.Free {
