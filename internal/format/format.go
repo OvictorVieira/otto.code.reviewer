@@ -157,6 +157,63 @@ func QuotaFailure(err error) string {
 		"<details> <summary>Engine status</summary>\n<br/>\n\n```\n%s\n```\n\n</details>\n", details)
 }
 
+var failureWords = map[bool]struct {
+	title, intro, next, unexpected string
+	kinds                          map[engine.FailureKind]string
+	reset                          string
+}{
+	true: {
+		title:      "### Otto não conseguiu concluir este review",
+		intro:      "Nenhum dos motores configurados conseguiu analisar o pull request:",
+		next:       "Espere o limite renovar, faça login no motor ou adicione outro com `otto setup`. Os detalhes técnicos ficam no log do Otto, na máquina onde ele roda.\n\nDepois comente `%s` para tentar de novo.",
+		unexpected: "Ocorreu um erro inesperado antes ou durante a análise.",
+		reset:      " (informado pelo provedor: %s)",
+		kinds: map[engine.FailureKind]string{
+			engine.FailQuota: "limite de uso atingido", engine.FailAuth: "não está autenticado",
+			engine.FailMissing: "não está instalado ou não foi encontrado", engine.FailNetwork: "falha de conexão",
+			engine.FailTimeout: "demorou demais e foi interrompido", engine.FailInvalid: "respondeu em um formato que o Otto não conseguiu usar",
+			engine.FailOther: "falhou por um motivo inesperado",
+		},
+	},
+	false: {
+		title:      "### Otto could not finish this review",
+		intro:      "None of the configured engines could analyze the pull request:",
+		next:       "Wait for the limit to reset, sign in to the engine, or add another one with `otto setup`. Technical details are in Otto's log, on the machine where it runs.\n\nThen comment `%s` to try again.",
+		unexpected: "An unexpected error happened before or during the analysis.",
+		reset:      " (reported by the provider: %s)",
+		kinds: map[engine.FailureKind]string{
+			engine.FailQuota: "usage limit reached", engine.FailAuth: "not signed in",
+			engine.FailMissing: "not installed or not found", engine.FailNetwork: "connection problem",
+			engine.FailTimeout: "took too long and was stopped", engine.FailInvalid: "answered in a format Otto could not use",
+			engine.FailOther: "failed for an unexpected reason",
+		},
+	},
+}
+
+// Failure explains why a review could not finish. It names each engine and the
+// kind of problem, and never repeats raw engine output, which can contain code
+// from the diff. The detail stays in Otto's own log.
+func Failure(failures []engine.EngineFailure, trigger, language string) string {
+	words := failureWords[strings.Contains(strings.ToLower(language), "portuguese")]
+	var b strings.Builder
+	b.WriteString(words.title + "\n\n")
+	if len(failures) == 0 {
+		b.WriteString(words.unexpected + "\n\n")
+	} else {
+		b.WriteString(words.intro + "\n\n")
+		for _, f := range failures {
+			fmt.Fprintf(&b, "- **%s**: %s", f.Engine, words.kinds[f.Kind])
+			if f.ResetAt != "" {
+				fmt.Fprintf(&b, words.reset, f.ResetAt)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, words.next, trigger)
+	return b.String()
+}
+
 func engineLabel(m Meta) string {
 	label := fmt.Sprintf("`%s`", m.Engine)
 	if m.Model != "" {

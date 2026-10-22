@@ -579,3 +579,29 @@ func TestBotUnavailableFallsBackToTheUserAndStillReviews(t *testing.T) {
 		t.Errorf("the reason must be logged:\n%s", h.out)
 	}
 }
+
+func TestWatchFailureCommentExplainsTheCauseAndNeverPastesEngineOutput(t *testing.T) {
+	raw := "exit status 1: + candidateSignal?: CandidateSignal;\nERROR: You’ve hit your usage limit. Upgrade to Plus, or try again at Nov 18th, 2026 6:28 PM.\n"
+	h := newHarness(t, fakeEngine{name: "codex", err: errors.New(raw)})
+	h.app.Cfg.Language = "Brazilian Portuguese"
+	h.host.comments = []trigger.Comment{triggerComment(41, "OvictorVieira")}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(h.host.plain) != 1 {
+		t.Fatalf("comments = %v", h.host.plain)
+	}
+	comment := h.host.plain[0]
+	for _, want := range []string{"não conseguiu concluir este review", "**codex**", "limite de uso atingido", "Nov 18th, 2026 6:28 PM", "/otto review"} {
+		if !strings.Contains(comment, want) {
+			t.Errorf("comment missing %q:\n%s", want, comment)
+		}
+	}
+	for _, leaked := range []string{"candidateSignal", "exit status", "ERROR:", "```"} {
+		if strings.Contains(comment, leaked) {
+			t.Errorf("comment leaked engine output (%q):\n%s", leaked, comment)
+		}
+	}
+}

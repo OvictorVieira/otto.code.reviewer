@@ -159,3 +159,62 @@ func TestSummaryShowsVerificationAndSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestFailureExplainsWhyInPortugueseWithoutRawOutput(t *testing.T) {
+	s := Failure([]engine.EngineFailure{
+		{Engine: "codex", Kind: engine.FailQuota, ResetAt: "Nov 18th, 2026 6:28 PM"},
+		{Engine: "claude", Kind: engine.FailAuth},
+	}, "@otto-assist review", "Brazilian Portuguese")
+
+	for _, want := range []string{
+		"Otto não conseguiu concluir este review",
+		"**codex**", "limite de uso atingido", "Nov 18th, 2026 6:28 PM",
+		"**claude**", "não está autenticado",
+		"`@otto-assist review`", "otto setup",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("failure comment missing %q:\n%s", want, s)
+		}
+	}
+	for _, raw := range []string{"exit status", "ERROR:", "```"} {
+		if strings.Contains(s, raw) {
+			t.Errorf("failure comment must not carry raw output (%q):\n%s", raw, s)
+		}
+	}
+}
+
+func TestFailureIsInEnglishByDefault(t *testing.T) {
+	s := Failure([]engine.EngineFailure{{Engine: "codex", Kind: engine.FailQuota}}, "/otto review", "English")
+	for _, want := range []string{"Otto could not finish this review", "**codex**", "usage limit reached", "`/otto review`"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("failure comment missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "não") {
+		t.Errorf("English comment contains Portuguese:\n%s", s)
+	}
+}
+
+func TestFailureWithoutEngineDetailsStaysGeneric(t *testing.T) {
+	s := Failure(nil, "/otto review", "English")
+	if !strings.Contains(s, "Otto could not finish this review") || !strings.Contains(s, "`/otto review`") {
+		t.Errorf("generic failure comment = %s", s)
+	}
+	if strings.Contains(s, "```") {
+		t.Errorf("generic failure comment must not carry raw output:\n%s", s)
+	}
+}
+
+func TestFailureNamesEveryKindOfProblem(t *testing.T) {
+	kinds := map[engine.FailureKind]string{
+		engine.FailQuota: "usage limit reached", engine.FailAuth: "not signed in", engine.FailMissing: "not installed",
+		engine.FailTimeout: "took too long", engine.FailNetwork: "connection problem",
+		engine.FailInvalid: "answered in a format Otto could not use", engine.FailOther: "failed for an unexpected reason",
+	}
+	for kind, want := range kinds {
+		s := Failure([]engine.EngineFailure{{Engine: "e", Kind: kind}}, "/otto review", "English")
+		if !strings.Contains(s, want) {
+			t.Errorf("%s: comment missing %q:\n%s", kind, want, s)
+		}
+	}
+}

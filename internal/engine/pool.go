@@ -70,7 +70,7 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 			err = accept(text)
 		}
 		if err != nil {
-			failure := fmt.Errorf("%s: %w", e.Name(), err)
+			failure := &EngineError{Name: e.Name(), Err: err}
 			out.Failures = append(out.Failures, failure.Error())
 			failures = append(failures, failure)
 			if ctx.Err() != nil {

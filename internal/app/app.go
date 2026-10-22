@@ -437,8 +437,7 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 	if err != nil {
 		a.logf("%s#%d: review failed: %v", req.Repo, req.PR, err)
 		_ = a.Host.React(write, req.Repo, req.CommentID, "confused")
-		_ = a.Host.Comment(write, req.Repo, req.PR, fmt.Sprintf(
-			"Otto could not finish this review.\n\n```\n%s\n```\n\nComment `%s` to try again.", trim(err.Error(), 1500), a.Cfg.Trigger))
+		_ = a.Host.Comment(write, req.Repo, req.PR, format.Failure(engine.Failures(err), a.Cfg.Trigger, a.Cfg.Language))
 		return
 	}
 	if report.Findings == 0 {
@@ -451,11 +450,4 @@ func short(sha string) string {
 		return sha[:10]
 	}
 	return sha
-}
-
-func trim(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "…"
-	}
-	return s
 }

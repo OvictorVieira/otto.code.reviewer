@@ -388,7 +388,7 @@ func isQuotaMessage(s string) bool {
 	for _, marker := range []string{
 		"rate limit exceeded", "rate_limit_exceeded", "quota exceeded", "quota_exceeded",
 		"premium request limit", "premium request quota", "out of premium requests",
-		"usage limit reached", "monthly quota exhausted", "monthly request limit", "too many requests",
+		"usage limit reached", "hit your usage limit", "reached your usage limit", "monthly quota exhausted", "monthly request limit", "too many requests",
 		"status code 429", "http 429", "error 429",
 	} {
 		if strings.Contains(s, marker) {
