@@ -31,7 +31,7 @@ type Request struct {
 var pullURL = regexp.MustCompile(`/pull/(\d+)`)
 
 // Pending returns requests from allowed authors, on pull requests, whose
-// first line starts with the trigger phrase and that were not handled yet.
+// have a line starting with the trigger phrase and that were not handled yet.
 func Pending(comments []Comment, phrase string, allowed []string, done func(int64) bool) []Request {
 	phrase = strings.ToLower(strings.TrimSpace(phrase))
 	allow := map[string]bool{}
@@ -58,14 +58,26 @@ func Pending(comments []Comment, phrase string, allowed []string, done func(int6
 	return out
 }
 
+// matchTrigger looks for a line that starts with the trigger phrase, anywhere in
+// the comment, so a review can be asked for after a few words of context. Lines
+// inside fenced code blocks never count, and neither do quoted lines or a phrase
+// in the middle of a sentence.
 func matchTrigger(body, phrase string) (string, bool) {
-	first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(body), "\n", 2)[0])
-	if !strings.HasPrefix(strings.ToLower(first), phrase) {
-		return "", false
+	inFence := false
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || !strings.HasPrefix(strings.ToLower(line), phrase) {
+			continue
+		}
+		rest := line[len(phrase):]
+		if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
+			continue // "/otto reviewer" is not the trigger
+		}
+		return strings.TrimSpace(rest), true
 	}
-	rest := first[len(phrase):]
-	if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
-		return "", false // "/otto reviewer" is not the trigger
-	}
-	return strings.TrimSpace(rest), true
+	return "", false
 }

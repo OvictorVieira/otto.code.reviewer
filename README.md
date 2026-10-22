@@ -148,7 +148,7 @@ And the summary tells you what was checked:
 /otto review focus on the payment retry logic and the new migration
 ```
 
-Anything after the trigger becomes extra instructions for the reviewer. Only comments written by you trigger a review.
+Anything after the trigger becomes extra instructions for the reviewer. The trigger can follow other text in the comment, as long as it starts its own line outside a code block. Only comments written by you trigger a review.
 
 **From the terminal**, on any pull request you can access, watched or not. Handy at work, when you want a review
 without setting anything up in the repository:

@@ -96,3 +96,35 @@ func TestPruneForgetsOldEntries(t *testing.T) {
 		t.Errorf("prune kept the wrong entries: %+v", s.Processed)
 	}
 }
+
+func TestTriggerOnItsOwnLineAfterOtherText(t *testing.T) {
+	url := "https://github.com/OvictorVieira/elevra.ai/pull/165#issuecomment-1"
+	cases := []struct {
+		name         string
+		body         string
+		want         bool
+		instructions string
+	}{
+		{"after a paragraph", "Fixed both findings.\n\n/otto review", true, ""},
+		{"with instructions on a later line", "Done.\n/otto review focus on the retry\nthanks", true, "focus on the retry"},
+		{"with Windows line endings", "Done.\r\n/otto review\r\n", true, ""},
+		{"first matching line wins", "/otto review one\n/otto review two", true, "one"},
+		{"inside a fenced code block", "Run this:\n```\n/otto review\n```", false, ""},
+		{"inside a fenced block with a language", "```bash\n/otto review\n```\nthanks", false, ""},
+		{"quoted from another comment", "> /otto review\nagreed", false, ""},
+		{"mentioned in the middle of a sentence", "Fixed. Please /otto review again", false, ""},
+		{"similar word on a later line", "Done.\n/otto reviewer", false, ""},
+		{"after a closed code block", "```\ncode\n```\n/otto review", true, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Pending([]Comment{comment(1, "me", c.body, url)}, "/otto review", []string{"me"}, func(int64) bool { return false })
+			if (len(got) == 1) != c.want {
+				t.Fatalf("pending = %+v, want match=%v", got, c.want)
+			}
+			if c.want && got[0].Instructions != c.instructions {
+				t.Errorf("instructions = %q, want %q", got[0].Instructions, c.instructions)
+			}
+		})
+	}
+}
