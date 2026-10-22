@@ -59,6 +59,8 @@ type Deps struct {
 	Efforts     func(name string) []string
 	Installed   func(name string) bool
 	ValidateApp func(ctx context.Context, id int64, keyPath string) (string, error)
+	// Installations lists the accounts the GitHub App is installed on.
+	Installations func(ctx context.Context, id int64, keyPath string) ([]ghapp.Installation, error)
 }
 
 func defaultDeps() Deps {
@@ -67,6 +69,9 @@ func defaultDeps() Deps {
 		ValidateApp: func(ctx context.Context, id int64, key string) (string, error) {
 			return (&ghapp.Client{AppID: id, KeyPath: key}).Validate(ctx)
 		},
+		Installations: func(ctx context.Context, id int64, key string) ([]ghapp.Installation, error) {
+			return (&ghapp.Client{AppID: id, KeyPath: key}).Installations(ctx)
+		},
 	}
 }
 
@@ -74,12 +79,16 @@ type fetchedMsg struct{ step int }
 
 // wizard is the bubbletea model of the whole setup.
 type wizard struct {
-	deps     Deps
-	cfg      config.Config
-	repos    []string
-	previous map[string]engine.Spec
-	catalogs map[string][]engine.Model
-	service  bool
+	deps  Deps
+	login string // the GitHub account whose repositories Otto reviews
+	// installLink is where to install the app when the person continued without it being
+	// installed; the summary printed after setup repeats it as selectable text.
+	installLink, appSlug string
+	cfg                  config.Config
+	repos                []string
+	previous             map[string]engine.Spec
+	catalogs             map[string][]engine.Model
+	service              bool
 
 	steps  []step
 	i, dir int
@@ -485,9 +494,60 @@ func (w *wizard) askKey(id int64) *nested {
 				return w.problem(err.Error())
 			}
 			w.cfg.App = config.GitHubApp{ID: id, KeyPath: key}
-			return &nested{ui: picker.NewNotice("Connected", "Otto will post as "+slug+"[bot]."), done: func([]string) *nested { return nil }}
+			return w.checkInstallation(id, key, slug)
 		},
 	}
+}
+
+const manageInstallationsURL = "https://github.com/settings/installations"
+
+// installReminder is what the summary after setup says when the app was not confirmed installed.
+func installReminder(link, slug string) string {
+	if link == "" {
+		return ""
+	}
+	return fmt.Sprintf("\nWarning: installation of %s not confirmed. Until it is installed Otto posts as you.\n  Install it (choose All repositories): %s\n", slug, picker.Link(link, link))
+}
+
+// checkInstallation asks GitHub where the app is installed. Otto can only post as the app on the
+// accounts and repositories it is installed on, so a missing or partial installation is explained
+// here, with the link to fix it, instead of being found later in a log.
+func (w *wizard) checkInstallation(id int64, key, slug string) *nested {
+	installs, err := w.deps.Installations(context.Background(), id, key)
+	w.installLink, w.appSlug = "", slug
+	link := func(title, body, url string) *nested {
+		return &nested{ui: picker.NewLinkNotice(title, body, url, "check again", "continue anyway"), done: func(vals []string) *nested {
+			if len(vals) > 0 && vals[0] == "skip" {
+				w.installLink = ghapp.InstallURL(slug)
+				return nil
+			}
+			return w.checkInstallation(id, key, slug)
+		}}
+	}
+	if err != nil {
+		return link("Could not check the installation",
+			fmt.Sprintf("GitHub did not say where %s is installed (%v). Otto can only post as %s[bot] where the app is installed. If you already installed it, you can continue.", slug, err, slug),
+			ghapp.InstallURL(slug))
+	}
+
+	var elsewhere []string
+	for _, in := range installs {
+		if strings.EqualFold(in.Account, w.login) {
+			if in.AllRepositories {
+				return &nested{ui: picker.NewNotice("Connected", fmt.Sprintf("Otto will post as %s[bot]. The app is installed on %s, on all repositories.", slug, in.Account)), done: func([]string) *nested { return nil }}
+			}
+			return link("The app sees only some repositories",
+				fmt.Sprintf("%s is installed on %s, but only on the repositories picked at install time. In any other repository Otto posts as you.\n\nTo cover every repository, open the link, click Configure next to %s and choose All repositories.", slug, in.Account, slug),
+				manageInstallationsURL)
+		}
+		elsewhere = append(elsewhere, in.Account)
+	}
+	body := fmt.Sprintf("%s is not installed on %s yet, and Otto cannot post as %s[bot] until it is: it would post as you instead.", slug, w.login, slug)
+	if len(elsewhere) > 0 {
+		body += fmt.Sprintf(" It is installed on %s, but not on %s.", strings.Join(elsewhere, ", "), w.login)
+	}
+	body += fmt.Sprintf("\n\nOpen the link, pick %s and choose All repositories: one install covers every repository, including new ones. Then come back and press enter.", w.login)
+	return link("Install the app on "+w.login, body, ghapp.InstallURL(slug))
 }
 
 // problem shows what went wrong and, on enter, asks for the app id again.
@@ -535,6 +595,7 @@ func Run(ctx context.Context, out io.Writer) error {
 	cfg.AllowedAuthors = []string{login}
 
 	w := newWizard(defaultDeps(), cfg, repos)
+	w.login = login
 	if _, err := tea.NewProgram(w, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		return err
 	}
@@ -564,6 +625,7 @@ func Run(ctx context.Context, out io.Writer) error {
 	} else {
 		fmt.Fprintf(out, "  posts as   you\n")
 	}
+	fmt.Fprint(out, installReminder(w.installLink, w.appSlug))
 	if w.service {
 		logPath, err := service.Install()
 		if err != nil {

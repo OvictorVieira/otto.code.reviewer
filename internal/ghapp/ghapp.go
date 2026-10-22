@@ -136,7 +136,7 @@ func (c *Client) TokenForRepo(ctx context.Context, repo string) (string, error) 
 	}
 	if status, err := c.call(ctx, http.MethodGet, "/repos/"+repo+"/installation", jwt, &inst); err != nil {
 		if status == http.StatusNotFound {
-			return "", fmt.Errorf("the Otto GitHub App is not installed on %s: install it on that account or repository, then retry", repo)
+			return "", c.notInstalled(ctx, jwt, repo)
 		}
 		return "", err
 	}
@@ -161,6 +161,50 @@ func (c *Client) TokenForRepo(ctx context.Context, repo string) (string, error) 
 	}
 	c.tokens[inst.ID] = cached{tok.Token, tok.Expires}
 	return tok.Token, nil
+}
+
+// InstallURL is the page where an app is installed on an account.
+func InstallURL(slug string) string { return "https://github.com/apps/" + slug + "/installations/new" }
+
+// notInstalled explains that the app cannot post on repo yet and where to install it. The link
+// needs the app's name, so it is looked up; without it the advice still says what to do.
+func (c *Client) notInstalled(ctx context.Context, jwt, repo string) error {
+	var app struct {
+		Slug string `json:"slug"`
+	}
+	where := "install it on that account, choosing All repositories, then retry"
+	if _, err := c.call(ctx, http.MethodGet, "/app", jwt, &app); err == nil && app.Slug != "" {
+		where = fmt.Sprintf("install it on that account, choosing All repositories, at %s, then retry", InstallURL(app.Slug))
+	}
+	return fmt.Errorf("the Otto GitHub App is not installed on %s: %s", repo, where)
+}
+
+// Installation is one account the app is installed on.
+type Installation struct {
+	Account         string
+	AllRepositories bool // false: only the repositories picked at install time
+}
+
+// Installations lists the accounts the app is installed on and whether it sees every repository there.
+func (c *Client) Installations(ctx context.Context) ([]Installation, error) {
+	jwt, err := c.jwt()
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Selection string `json:"repository_selection"`
+		Account   struct {
+			Login string `json:"login"`
+		} `json:"account"`
+	}
+	if _, err := c.call(ctx, http.MethodGet, "/app/installations?per_page=100", jwt, &raw); err != nil {
+		return nil, err
+	}
+	var out []Installation
+	for _, r := range raw {
+		out = append(out, Installation{Account: r.Account.Login, AllRepositories: r.Selection == "all"})
+	}
+	return out, nil
 }
 
 // Validate checks the app id and key against GitHub and returns the app's

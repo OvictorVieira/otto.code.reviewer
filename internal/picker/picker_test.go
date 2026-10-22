@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -316,4 +317,107 @@ func TestMultiUncheckingEverythingThenEnterPicksTheCursorItem(t *testing.T) {
 	if got := m.Values(); len(got) != 1 || got[0] != "codex" {
 		t.Errorf("values = %v, want enter to pick the item under the cursor when nothing is checked", got)
 	}
+}
+
+const installURL = "https://github.com/apps/otto-connector/installations/new"
+
+func linkNotice(t *testing.T) (*NoticeModel, *[]string) {
+	t.Helper()
+	var calls []string
+	oldOpen, oldCopy, oldLinks := OpenURL, CopyText, LinksEnabled
+	t.Cleanup(func() { OpenURL, CopyText, LinksEnabled = oldOpen, oldCopy, oldLinks })
+	OpenURL = func(u string) error { calls = append(calls, "open "+u); return nil }
+	CopyText = func(s string) error { calls = append(calls, "copy "+s); return nil }
+	LinksEnabled = true
+	m := NewLinkNotice("Install the app", "Otto cannot post as the app until it is installed.", installURL, "check again", "continue anyway")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return next.(*NoticeModel), &calls
+}
+
+func key(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
+
+func TestLinkNoticeShowsTheLinkAsPlainTextAndAsAClickableLink(t *testing.T) {
+	m, _ := linkNotice(t)
+	view := m.View()
+	if !strings.Contains(view, installURL) {
+		t.Errorf("the link must be visible as text so it can be read and typed:\n%s", view)
+	}
+	if !strings.Contains(view, "\x1b]8;;"+installURL+"\x1b\\") {
+		t.Errorf("the link must also be a clickable terminal hyperlink (OSC 8):\n%q", view)
+	}
+	for _, hint := range []string{"o open", "c copy", "check again", "continue anyway"} {
+		if !strings.Contains(view, hint) {
+			t.Errorf("the screen must say which keys do what, missing %q:\n%s", hint, view)
+		}
+	}
+}
+
+func TestLinkNoticeIsPlainTextWhereTheTerminalCannotDoLinks(t *testing.T) {
+	m, _ := linkNotice(t)
+	LinksEnabled = false
+	if view := m.View(); strings.Contains(view, "\x1b]8;;") || !strings.Contains(view, installURL) {
+		t.Errorf("without hyperlink support the link must be plain text only:\n%q", view)
+	}
+}
+
+func TestLinkNoticeOpensTheLinkInTheBrowserAndCopiesIt(t *testing.T) {
+	m, calls := linkNotice(t)
+
+	m = send2(m, key('o'))
+	if len(*calls) != 1 || (*calls)[0] != "open "+installURL || !strings.Contains(m.View(), "Opened") {
+		t.Errorf("calls = %v, view:\n%s", *calls, m.View())
+	}
+	m = send2(m, key('c'))
+	if len(*calls) != 2 || (*calls)[1] != "copy "+installURL || !strings.Contains(m.View(), "copied") {
+		t.Errorf("calls = %v, view:\n%s", *calls, m.View())
+	}
+}
+
+func TestLinkNoticeSaysSoWhenTheBrowserCannotBeOpened(t *testing.T) {
+	m, _ := linkNotice(t)
+	OpenURL = func(string) error { return errors.New("no browser") }
+
+	m = send2(m, key('o'))
+
+	if view := m.View(); !strings.Contains(view, "Could not open") || !strings.Contains(view, installURL) {
+		t.Errorf("a failed open must say so and keep the link on screen:\n%s", view)
+	}
+}
+
+func TestLinkNoticeKeysCheckAgainContinueAnywayOrGoBack(t *testing.T) {
+	cases := []struct {
+		name   string
+		msg    tea.Msg
+		action Action
+		values []string
+	}{
+		{"enter checks again", tea.KeyMsg{Type: tea.KeyEnter}, Picked, nil},
+		{"s continues anyway", key('s'), Picked, []string{"skip"}},
+		{"esc goes back", tea.KeyMsg{Type: tea.KeyEsc}, Back, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, _ := linkNotice(t)
+			m = send2(m, c.msg)
+			if m.Action() != c.action || strings.Join(m.Values(), ",") != strings.Join(c.values, ",") {
+				t.Errorf("action = %v, values = %v, want %v %v", m.Action(), m.Values(), c.action, c.values)
+			}
+		})
+	}
+}
+
+func TestAPlainNoticeIgnoresTheLinkKeys(t *testing.T) {
+	m := NewNotice("Connected", "Otto will post as otto-connector[bot].")
+	next, _ := m.Update(key('o'))
+	if next.(*NoticeModel).Action() != Waiting {
+		t.Error("a notice without a link must not react to o")
+	}
+}
+
+func send2(m *NoticeModel, msgs ...tea.Msg) *NoticeModel {
+	for _, msg := range msgs {
+		next, _ := m.Update(msg)
+		m = next.(*NoticeModel)
+	}
+	return m
 }

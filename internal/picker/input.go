@@ -85,16 +85,30 @@ func (m *InputModel) View() string {
 	return placeCenter(box, m.width, m.height, max(0, (m.height-9)/2))
 }
 
-// NoticeModel shows a message and waits for enter.
+// NoticeModel shows a message and waits for enter. With a link it also offers to open or copy it
+// and, when asked to, to continue without acting on it.
 type NoticeModel struct {
 	title, body   string
 	width, height int
 	action        Action
+	values        []string
+
+	url, primary, skip string
+	status             string
 }
 
 // NewNotice builds a message screen.
 func NewNotice(title, body string) *NoticeModel {
 	return &NoticeModel{title: title, body: body, width: 100, height: 30}
+}
+
+// NewLinkNotice builds a message screen about a link the person has to follow. Enter runs the
+// primary action ("check again"), o opens the link, c copies it, s skips ("continue anyway"; empty
+// hides it) and esc goes back.
+func NewLinkNotice(title, body, url, primary, skip string) *NoticeModel {
+	n := NewNotice(title, body)
+	n.url, n.primary, n.skip = url, primary, skip
+	return n
 }
 
 // Init implements tea.Model.
@@ -103,8 +117,8 @@ func (m *NoticeModel) Init() tea.Cmd { return nil }
 // Action says how the screen ended.
 func (m *NoticeModel) Action() Action { return m.action }
 
-// Values is empty: a notice picks nothing.
-func (m *NoticeModel) Values() []string { return nil }
+// Values is empty for enter, and ["skip"] when the person chose to continue anyway.
+func (m *NoticeModel) Values() []string { return m.values }
 
 // Update implements tea.Model.
 func (m *NoticeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -122,6 +136,30 @@ func (m *NoticeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			m.action = Picked
 			return m, tea.Quit
+		case tea.KeyRunes:
+			if m.url == "" || len(msg.Runes) != 1 {
+				return m, nil
+			}
+			switch msg.Runes[0] {
+			case 'o':
+				if err := OpenURL(m.url); err != nil {
+					m.status = "Could not open the browser. Copy the link above (c) or type it."
+				} else {
+					m.status = "Opened in your browser."
+				}
+			case 'c':
+				if err := CopyText(m.url); err != nil {
+					m.status = "Could not copy. Select the link above or type it."
+				} else {
+					m.status = "Link copied."
+				}
+			case 's':
+				if m.skip != "" {
+					m.values = []string{"skip"}
+					m.action = Picked
+					return m, tea.Quit
+				}
+			}
 		}
 	}
 	return m, nil
@@ -130,7 +168,20 @@ func (m *NoticeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View implements tea.Model.
 func (m *NoticeModel) View() string {
 	w := max(46, min(m.width-8, 84)) - 6
-	body := "\n" + titleSt.Render(m.title) + "\n\n" + wrap(m.body, w) + "\n\n" + dimSt.Render("enter continue · esc back")
+	body := "\n" + titleSt.Render(m.title) + "\n\n" + wrap(m.body, w)
+	keys := "enter continue · esc back"
+	if m.url != "" {
+		body += "\n\n" + Link(m.url, m.url)
+		keys = "enter " + m.primary + " · o open · c copy"
+		if m.skip != "" {
+			keys += " · s " + m.skip
+		}
+		keys += " · esc back"
+		if m.status != "" {
+			body += "\n\n" + m.status
+		}
+	}
+	body += "\n\n" + dimSt.Render(keys)
 	box := boxSt.Width(w + 4).Render(body)
 	return placeCenter(box, m.width, m.height, max(0, (m.height-strings.Count(body, "\n")-4)/2))
 }

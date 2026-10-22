@@ -52,6 +52,14 @@ func fakeGitHub(t *testing.T, key *rsa.PrivateKey, issued *int) *httptest.Server
 			json.NewEncoder(w).Encode(map[string]any{"slug": "otto-review", "name": "Otto Review"})
 		}
 	})
+	mux.HandleFunc("/app/installations", func(w http.ResponseWriter, r *http.Request) {
+		if auth(w, r) {
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 777, "repository_selection": "all", "account": map[string]any{"login": "acme", "type": "Organization"}},
+				{"id": 888, "repository_selection": "selected", "account": map[string]any{"login": "victor", "type": "User"}},
+			})
+		}
+	})
 	mux.HandleFunc("/repos/acme/missing/installation", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	})
@@ -123,6 +131,12 @@ func TestTokenForRepoExplainsWhenTheAppIsNotInstalled(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not installed") || !strings.Contains(err.Error(), "acme/missing") {
 		t.Errorf("err = %v, want a clear 'app is not installed on acme/missing'", err)
 	}
+	if err != nil && !strings.Contains(err.Error(), "https://github.com/apps/otto-review/installations/new") {
+		t.Errorf("err = %v, want the link where the app is installed, so the fix is one click away", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "All repositories") {
+		t.Errorf("err = %v, want the hint to pick All repositories", err)
+	}
 }
 
 func TestMissingOrInvalidKeyFailsClearly(t *testing.T) {
@@ -149,5 +163,29 @@ func TestValidateReturnsTheAppSlugSoSetupCanShowWhoWillPost(t *testing.T) {
 
 	if err != nil || slug != "otto-review" {
 		t.Errorf("slug = %q, err = %v", slug, err)
+	}
+}
+
+func TestInstallURLPointsAtTheAppsInstallPage(t *testing.T) {
+	if got := InstallURL("otto-connector"); got != "https://github.com/apps/otto-connector/installations/new" {
+		t.Errorf("InstallURL = %q", got)
+	}
+}
+
+func TestInstallationsListsWhereTheAppIsInstalledAndWhetherItSeesEveryRepository(t *testing.T) {
+	path, key := writeKey(t)
+	issued := 0
+	srv := fakeGitHub(t, key, &issued)
+	defer srv.Close()
+	c := &Client{AppID: 1, KeyPath: path, BaseURL: srv.URL}
+
+	got, err := c.Installations(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Installation{{Account: "acme", AllRepositories: true}, {Account: "victor", AllRepositories: false}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("installations = %+v, want %+v", got, want)
 	}
 }

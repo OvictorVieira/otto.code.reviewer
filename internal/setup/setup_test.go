@@ -11,6 +11,7 @@ import (
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/ghapp"
 )
 
 var catalogs = map[string][]engine.Model{
@@ -36,6 +37,9 @@ func deps() Deps {
 			}
 			return "otto-review", nil
 		},
+		Installations: func(context.Context, int64, string) ([]ghapp.Installation, error) {
+			return []ghapp.Installation{{Account: "me", AllRepositories: true}}, nil
+		},
 	}
 }
 
@@ -50,6 +54,7 @@ func start(t *testing.T) *driver {
 	t.Helper()
 	cfg := config.Default()
 	w := newWizard(deps(), cfg, []string{"acme/api", "acme/web", "me/notes"})
+	w.login = "me"
 	w.spin.Spinner.FPS = time.Millisecond // do not wait 100ms per frame in tests
 	d := &driver{t: t, w: w}
 	d.run(w.Init())
@@ -372,5 +377,129 @@ func TestEscOnTheFirstStepLeavesTheSetupWithoutSaving(t *testing.T) {
 
 	if !d.w.quit || d.w.finished {
 		t.Errorf("quit = %v, finished = %v: esc on the first step must leave the setup unfinished", d.w.quit, d.w.finished)
+	}
+}
+
+// startApp opens the wizard on the app id step, for the account "victor", with the installations
+// the fake GitHub reports at each check.
+func startApp(t *testing.T, installs func(call int) ([]ghapp.Installation, error)) *driver {
+	t.Helper()
+	dep := deps()
+	calls := 0
+	dep.Installations = func(context.Context, int64, string) ([]ghapp.Installation, error) {
+		calls++
+		return installs(calls)
+	}
+	w := newWizard(dep, config.Default(), []string{"victor/api"})
+	w.login = "victor"
+	w.spin.Spinner.FPS = time.Millisecond
+	d := &driver{t: t, w: w}
+	d.run(w.Init())
+	finishToIdentity(d)
+	d.key(tea.KeyDown, tea.KeyEnter) // As Otto
+	d.text("5384980")
+	d.key(tea.KeyEnter)
+	d.text("/tmp/k.pem")
+	d.key(tea.KeyEnter)
+	return d
+}
+
+func TestAppInstalledOnEveryRepositoryJustConnects(t *testing.T) {
+	d := startApp(t, func(int) ([]ghapp.Installation, error) {
+		return []ghapp.Installation{{Account: "victor", AllRepositories: true}}, nil
+	})
+	if s := d.screen(); !strings.Contains(s, "Connected") || !strings.Contains(s, "otto-review[bot]") || !strings.Contains(s, "installed on victor") {
+		t.Errorf("expected the confirmation with where it is installed:\n%s", s)
+	}
+}
+
+func TestAppNotInstalledSendsThePersonToTheInstallLinkAndChecksAgain(t *testing.T) {
+	// Without the installation Otto cannot post as the app at all: this step is where that is caught.
+	d := startApp(t, func(call int) ([]ghapp.Installation, error) {
+		if call < 3 {
+			return nil, nil // not installed yet, and still not after the first "check again"
+		}
+		return []ghapp.Installation{{Account: "victor", AllRepositories: true}}, nil
+	})
+	s := d.screen()
+	for _, want := range []string{"not installed", "https://github.com/apps/otto-review/installations/new", "All repositories", "victor", "o open", "c copy"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("the install screen is missing %q:\n%s", want, s)
+		}
+	}
+
+	d.key(tea.KeyEnter) // "I installed it": checks again, still not installed
+	if !strings.Contains(d.screen(), "https://github.com/apps/otto-review/installations/new") {
+		t.Errorf("when it is still not installed the link must stay on screen:\n%s", d.screen())
+	}
+	d.key(tea.KeyEnter) // third check: installed
+	if s := d.screen(); !strings.Contains(s, "Connected") {
+		t.Errorf("once installed it must connect:\n%s", s)
+	}
+}
+
+func TestAppInstalledOnlyOnSomeRepositoriesIsWarnedAboutAndPointedToTheSettings(t *testing.T) {
+	d := startApp(t, func(int) ([]ghapp.Installation, error) {
+		return []ghapp.Installation{{Account: "victor", AllRepositories: false}}, nil
+	})
+	s := d.screen()
+	for _, want := range []string{"only", "All repositories", "https://github.com/settings/installations"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the warning is missing %q:\n%s", want, s)
+		}
+	}
+}
+
+func TestAppInstalledOnlyOnAnotherAccountNamesWhereItIs(t *testing.T) {
+	d := startApp(t, func(int) ([]ghapp.Installation, error) {
+		return []ghapp.Installation{{Account: "acme", AllRepositories: true}}, nil
+	})
+	if s := d.screen(); !strings.Contains(s, "not installed") || !strings.Contains(s, "acme") {
+		t.Errorf("it must say the app is on acme but not on victor:\n%s", s)
+	}
+}
+
+func TestContinuingAnywayKeepsTheAppAndMovesOn(t *testing.T) {
+	d := startApp(t, func(int) ([]ghapp.Installation, error) { return nil, nil })
+
+	d.text("s")
+
+	if d.w.cfg.App.ID != 5384980 {
+		t.Errorf("app = %+v, want it kept when the person chooses to continue", d.w.cfg.App)
+	}
+	if !strings.Contains(d.screen(), "Start Otto in the background") {
+		t.Errorf("expected the next step:\n%s", d.screen())
+	}
+	if d.w.installLink != "https://github.com/apps/otto-review/installations/new" {
+		t.Errorf("installLink = %q, want the link remembered so the summary printed after setup can repeat it", d.w.installLink)
+	}
+}
+
+func TestTheSummaryAfterSetupRepeatsTheInstallLinkAsSelectableText(t *testing.T) {
+	got := installReminder("https://github.com/apps/otto-review/installations/new", "otto-review")
+	for _, want := range []string{"not confirmed", "otto-review", "https://github.com/apps/otto-review/installations/new", "All repositories"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reminder missing %q:\n%s", want, got)
+		}
+	}
+	if installReminder("", "otto-review") != "" {
+		t.Error("nothing to remind when the app is installed")
+	}
+}
+
+func TestAnInstalledAppLeavesNoReminder(t *testing.T) {
+	d := startApp(t, func(int) ([]ghapp.Installation, error) {
+		return []ghapp.Installation{{Account: "victor", AllRepositories: true}}, nil
+	})
+	if d.w.installLink != "" {
+		t.Errorf("installLink = %q, want none when the app is installed", d.w.installLink)
+	}
+}
+
+func TestAFailedInstallationCheckSaysWhyAndStillLetsThePersonContinue(t *testing.T) {
+	d := startApp(t, func(int) ([]ghapp.Installation, error) { return nil, errors.New("github is unreachable") })
+	s := d.screen()
+	if !strings.Contains(s, "github is unreachable") || !strings.Contains(s, "continue anyway") {
+		t.Errorf("a failed check must say why and offer to continue:\n%s", s)
 	}
 }

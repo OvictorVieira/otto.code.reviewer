@@ -340,7 +340,9 @@ to appear as a separate identity (`otto[bot]`), give Otto a GitHub App:
    and untick **Webhook → Active**.
 2. Repository permissions: **Pull requests: Read & write**, **Issues: Read & write**, **Contents: Read-only**.
 3. Create the app, note its **App ID**, and under **Private keys** generate and download a `.pem` file.
-4. **Install App** on your account (all repositories, or the ones Otto watches).
+4. **Install App** on your account and choose **All repositories**: one install covers every repository, including new
+   ones. Otto can only post as the app where it is installed. `otto setup` checks this for you and, if the app is missing
+   or sees only some repositories, shows the link; press `o` to open it in the browser or `c` to copy it.
 5. Run `otto setup`, pick **As Otto** at the identity step, and enter the App ID and the `.pem` path.
    Setup checks them against GitHub before saving.
 
@@ -349,7 +351,7 @@ to appear as a separate identity (`otto[bot]`), give Otto a GitHub App:
 | Comment `/otto review` on GitHub | `otto[bot]`, with a "Requested by @you" line |
 | `otto review <pr-url>` in the terminal | you |
 
-If the app is not installed on a repository, Otto logs why and posts as you instead, so a review is never lost.
+If the app is not installed on a repository, Otto logs why, with the link to install it, and posts as you instead, so a review is never lost.
 In `config.yaml` this is `github_app: {id: 123456, private_key: ~/.config/otto/otto.pem}`.
 
 ## Updates
