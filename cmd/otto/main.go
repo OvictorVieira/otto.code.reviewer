@@ -214,6 +214,7 @@ func updateNow(ctx context.Context) error {
 		return fmt.Errorf("install Otto %s: %w", latest, err)
 	}
 	fmt.Printf("Updated to %s. Restarting...\n", latest)
+	fmt.Println("A background Otto restarts on its own once the review in progress, if any, is finished.")
 	if err := update.Restart(); err != nil {
 		return fmt.Errorf("Otto was updated to %s but could not restart; run `otto update` again: %w", latest, err)
 	}

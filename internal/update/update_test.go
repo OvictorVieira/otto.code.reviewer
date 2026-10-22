@@ -178,3 +178,32 @@ func TestInstallRefusesTamperedDownload(t *testing.T) {
 		t.Errorf("the old binary must stay untouched, got %q", got)
 	}
 }
+
+func TestFingerprintChangesWhenTheBinaryIsReplacedAndIsEmptyWhenUnreadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "otto")
+	if err := os.WriteFile(path, []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := FingerprintOf(path)
+	if before == "" {
+		t.Fatal("fingerprint of an existing binary must not be empty")
+	}
+	if FingerprintOf(path) != before {
+		t.Error("fingerprint must be stable while the binary does not change")
+	}
+
+	replacement := path + ".new"
+	if err := os.WriteFile(replacement, []byte("a newer, longer binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if FingerprintOf(path) == before {
+		t.Error("fingerprint must change after the binary is replaced")
+	}
+
+	if got := FingerprintOf(filepath.Join(t.TempDir(), "missing")); got != "" {
+		t.Errorf("fingerprint of a missing file = %q, want empty", got)
+	}
+}

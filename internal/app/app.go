@@ -76,6 +76,11 @@ type App struct {
 	Upgrade func(ctx context.Context) (bool, error)
 	Restart func() error
 
+	// Fingerprint identifies the running binary on disk. When it changes while the watcher
+	// runs (an update replaced it), the watcher restarts into the new binary at the next safe
+	// point: between cycles, after any review in progress has finished. Nil disables the check.
+	Fingerprint func() string
+
 	// Bot returns a token that makes GitHub writes come from Otto's own
 	// identity for repo. Nil when no GitHub App is configured.
 	Bot func(ctx context.Context, repo string) (string, error)
@@ -101,11 +106,12 @@ func New(out io.Writer) (*App, error) {
 	}
 	return &App{
 		Cfg: cfg, State: st, Out: out, Bot: bot,
-		Restart:   update.Restart,
-		Host:      github.CLI{},
-		Checkouts: gitCheckouts{},
-		NewEngine: func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
-		Installed: engine.Installed,
+		Restart:     update.Restart,
+		Fingerprint: update.Fingerprint,
+		Host:        github.CLI{},
+		Checkouts:   gitCheckouts{},
+		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
+		Installed:   engine.Installed,
 	}, nil
 }
 
@@ -333,11 +339,12 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 		allowed = []string{login}
 	}
 	a.logf("watching as %s, trigger %q, every %s", login, a.Cfg.Trigger, a.Cfg.PollInterval)
+	startedAs := a.fingerprint()
 
 	var repos []string
 	var reposAt time.Time
 	for {
-		if a.selfUpdate(ctx) {
+		if a.selfUpdate(ctx) || a.restartForNewBinary(startedAs) {
 			return nil // only reached when Restart returns (tests); normally the process is replaced
 		}
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
@@ -368,6 +375,29 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 		case <-time.After(a.Cfg.PollInterval):
 		}
 	}
+}
+
+func (a *App) fingerprint() string {
+	if a.Fingerprint == nil {
+		return ""
+	}
+	return a.Fingerprint()
+}
+
+// restartForNewBinary restarts into the binary on disk when an update replaced it since this
+// process started. It runs between cycles, so a review in progress always finishes first,
+// and the process is replaced in place, so no old copy keeps running next to the new one.
+func (a *App) restartForNewBinary(startedAs string) bool {
+	now := a.fingerprint()
+	if startedAs == "" || now == "" || now == startedAs || a.Restart == nil {
+		return false
+	}
+	a.logf("the Otto binary was updated; restarting into the new version")
+	if err := a.Restart(); err != nil {
+		a.logf("restart failed, still running the old version: %v", err)
+		return false
+	}
+	return true
 }
 
 // selfUpdate installs a newer release and restarts into it. Requests triggered

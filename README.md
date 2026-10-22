@@ -360,6 +360,7 @@ In `config.yaml` this is `github_app: {id: 123456, private_key: ~/.config/otto/o
   after verifying the checksum, and carries on with the new version. Say no and it asks again tomorrow.
 - **From GitHub** (the background watcher answering `/otto review`): Otto updates itself first, restarts, and then
   handles the request, so a review always runs on the newest version. It never asks.
+- **A running background Otto never loses a review to an update.** When the binary on disk is replaced (by `otto update`, the installer or its own self-update), the watcher finishes the review in progress, then replaces itself in place with the new version, so there is never an old process left running next to the new one.
 - A check happens at most once an hour, and no network just means no update. `OTTO_NO_UPDATE=1` turns it off.
 
 ## Safety

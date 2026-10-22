@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -603,5 +604,67 @@ func TestWatchFailureCommentExplainsTheCauseAndNeverPastesEngineOutput(t *testin
 		if strings.Contains(comment, leaked) {
 			t.Errorf("comment leaked engine output (%q):\n%s", leaked, comment)
 		}
+	}
+}
+
+func TestWatchRestartsIntoTheNewBinaryOnlyAfterTheReviewInFlightFinishes(t *testing.T) {
+	var fingerprint atomic.Value
+	fingerprint.Store("v1")
+	var order []string
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, onRun: func() {
+		order = append(order, "reviewing")
+		fingerprint.Store("v2") // the binary is replaced while the review is running
+	}})
+	h.app.Cfg.PollInterval = 5 * time.Millisecond
+	h.app.Fingerprint = func() string { return fingerprint.Load().(string) }
+	h.app.Restart = func() error { order = append(order, "restart"); return nil }
+	h.host.comments = []trigger.Comment{triggerComment(50, "OvictorVieira")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.app.Watch(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(order, ",") != "reviewing,restart" {
+		t.Errorf("order = %v, want the review to finish before the restart", order)
+	}
+	if !h.app.State.Done(50) {
+		t.Error("the review that was running must be finished and remembered, not cut short")
+	}
+}
+
+func TestWatchDoesNotRestartWhileTheBinaryIsUnchangedOrUnreadable(t *testing.T) {
+	for name, fingerprints := range map[string][]string{
+		"unchanged":                 {"v1", "v1", "v1"},
+		"unreadable while replaced": {"v1", "", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			restarts := 0
+			h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+			h.app.Cfg.PollInterval = 5 * time.Millisecond
+			h.app.Fingerprint = func() string {
+				i := int(calls.Add(1)) - 1
+				if i >= len(fingerprints) {
+					i = len(fingerprints) - 1
+				}
+				return fingerprints[i]
+			}
+			h.app.Restart = func() error { restarts++; return nil }
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			if err := h.app.Watch(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+
+			if restarts != 0 {
+				t.Errorf("restarts = %d, want none", restarts)
+			}
+			if calls.Load() < 3 {
+				t.Errorf("the binary was checked %d times, want it checked on every cycle", calls.Load())
+			}
+		})
 	}
 }
