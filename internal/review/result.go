@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/diff"
@@ -48,25 +49,164 @@ type Result struct {
 	Confidence   float64
 }
 
+// The engine's JSON is read leniently: smaller models keep the structure of the requested review
+// but write text where a number or an object was asked for ("P2", "245-269"), or name a field
+// their own way. A field Otto cannot read is left empty; it never throws the whole review away.
+
+// flexNumber is a number written as a JSON number or as text.
+type flexNumber float64
+
+func (n *flexNumber) UnmarshalJSON(b []byte) error {
+	var f float64
+	if json.Unmarshal(b, &f) == nil {
+		*n = flexNumber(f)
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			*n = flexNumber(f)
+		}
+	}
+	return nil
+}
+
+// flexPriority is a priority 0..3 written as 2, "2", "P2" or "p2".
+type flexPriority struct {
+	value int
+	ok    bool
+}
+
+var priorityText = regexp.MustCompile(`^\s*[Pp]?\s*([0-3])\s*$`)
+
+func (p *flexPriority) UnmarshalJSON(b []byte) error {
+	var n int
+	if json.Unmarshal(b, &n) == nil {
+		p.value, p.ok = n, n >= 0 && n <= 3
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		if m := priorityText.FindStringSubmatch(s); m != nil {
+			p.value, p.ok = int(m[1][0]-'0'), true
+		}
+	}
+	return nil
+}
+
+// flexRange is a line range written as {"start": 5, "end": 7}, 5, "5", "5-7", "5–7" or "L5-L7".
+type flexRange struct{ start, end int }
+
+var (
+	rangeText   = regexp.MustCompile(`(\d+)\D+(\d+)`)
+	firstNumber = regexp.MustCompile(`\d+`)
+)
+
+func (r *flexRange) UnmarshalJSON(b []byte) error {
+	var obj struct {
+		Start flexNumber `json:"start"`
+		End   flexNumber `json:"end"`
+	}
+	if json.Unmarshal(b, &obj) == nil && obj.Start > 0 {
+		r.start, r.end = int(obj.Start), int(obj.End)
+		return nil
+	}
+	var text string
+	if json.Unmarshal(b, &text) != nil {
+		var n float64
+		if json.Unmarshal(b, &n) != nil {
+			return nil
+		}
+		text = strconv.Itoa(int(n))
+	}
+	if m := rangeText.FindStringSubmatch(text); m != nil {
+		r.start, _ = strconv.Atoi(m[1])
+		r.end, _ = strconv.Atoi(m[2])
+	} else if m := firstNumber.FindString(text); m != "" {
+		r.start, _ = strconv.Atoi(m)
+	}
+	return nil
+}
+
+type wireFinding struct {
+	Title        string       `json:"title"`
+	Body         string       `json:"body"`
+	Confidence   flexNumber   `json:"confidence_score"`
+	Priority     flexPriority `json:"priority"`
+	CodeLocation struct {
+		Path      string    `json:"absolute_file_path"`
+		AltPath   string    `json:"path"`
+		LineRange flexRange `json:"line_range"`
+	} `json:"code_location"`
+}
+
+type wireSpec struct {
+	Requirement string `json:"requirement"`
+	SpecItem    string `json:"spec_item"`
+	Item        string `json:"item"`
+	Status      string `json:"status"`
+	Note        string `json:"note"`
+	Explanation string `json:"explanation"`
+}
+
+func (w wireSpec) check() SpecCheck {
+	return SpecCheck{Requirement: firstNonEmpty(w.Requirement, w.SpecItem, w.Item), Status: specStatus(w.Status), Note: firstNonEmpty(w.Note, w.Explanation)}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// specStatus maps the words models use for a spec check onto Otto's four statuses.
+func specStatus(s string) string {
+	switch status := strings.ToLower(strings.TrimSpace(s)); status {
+	case "met", "pass", "passed", "ok", "yes", "done":
+		return "met"
+	case "partial", "partially", "partly":
+		return "partial"
+	case "missing", "absent", "not implemented":
+		return "missing"
+	case "wrong", "fail", "failed", "unmet", "no", "incorrect":
+		return "wrong"
+	default:
+		return status
+	}
+}
+
 type wireResult struct {
-	Findings []struct {
-		Title        string  `json:"title"`
-		Body         string  `json:"body"`
-		Confidence   float64 `json:"confidence_score"`
-		Priority     *int    `json:"priority"`
-		CodeLocation struct {
-			Path      string `json:"absolute_file_path"`
-			LineRange struct {
-				Start int `json:"start"`
-				End   int `json:"end"`
-			} `json:"line_range"`
-		} `json:"code_location"`
-	} `json:"findings"`
-	Verification       []Check     `json:"verification"`
-	SpecChecks         []SpecCheck `json:"spec_checks"`
-	OverallCorrectness string      `json:"overall_correctness"`
-	OverallExplanation string      `json:"overall_explanation"`
-	OverallConfidence  float64     `json:"overall_confidence_score"`
+	Findings           []wireFinding
+	Verification       []Check
+	SpecChecks         []wireSpec
+	OverallCorrectness string
+	OverallExplanation string
+	OverallConfidence  flexNumber
+}
+
+// decodeWire reads a review object part by part. Only "findings" must be a list; any other part
+// that cannot be read is skipped, and so is a single finding that cannot be read.
+func decodeWire(probe map[string]json.RawMessage) (wireResult, bool) {
+	var rawFindings []json.RawMessage
+	if json.Unmarshal(probe["findings"], &rawFindings) != nil {
+		return wireResult{}, false
+	}
+	var w wireResult
+	for _, raw := range rawFindings {
+		var f wireFinding
+		if json.Unmarshal(raw, &f) == nil {
+			w.Findings = append(w.Findings, f)
+		}
+	}
+	_ = json.Unmarshal(probe["verification"], &w.Verification)
+	_ = json.Unmarshal(probe["spec_checks"], &w.SpecChecks)
+	_ = json.Unmarshal(probe["overall_correctness"], &w.OverallCorrectness)
+	_ = json.Unmarshal(probe["overall_explanation"], &w.OverallExplanation)
+	_ = json.Unmarshal(probe["overall_confidence_score"], &w.OverallConfidence)
+	return w, true
 }
 
 var titleTag = regexp.MustCompile(`^\s*\[P([0-3])\]\s*`)
@@ -84,27 +224,29 @@ func ParseResult(output, repoRoot string) (Result, error) {
 
 	r := Result{
 		Verification: wire.Verification,
-		Spec:         wire.SpecChecks,
 		Correct:      strings.TrimSpace(strings.ToLower(wire.OverallCorrectness)) == "patch is correct",
 		Explanation:  strings.TrimSpace(wire.OverallExplanation),
-		Confidence:   wire.OverallConfidence,
+		Confidence:   float64(wire.OverallConfidence),
+	}
+	for _, spec := range wire.SpecChecks {
+		r.Spec = append(r.Spec, spec.check())
 	}
 	for _, w := range wire.Findings {
 		f := Finding{
 			Body:       strings.TrimSpace(w.Body),
-			Confidence: w.Confidence,
+			Confidence: float64(w.Confidence),
 			Priority:   2,
-			Path:       relativePath(w.CodeLocation.Path, repoRoot),
-			Start:      w.CodeLocation.LineRange.Start,
-			End:        w.CodeLocation.LineRange.End,
+			Path:       relativePath(firstNonEmpty(w.CodeLocation.Path, w.CodeLocation.AltPath), repoRoot),
+			Start:      w.CodeLocation.LineRange.start,
+			End:        w.CodeLocation.LineRange.end,
 		}
 		title := w.Title
 		if m := titleTag.FindStringSubmatch(title); m != nil {
 			f.Priority = int(m[1][0] - '0')
 			title = title[len(m[0]):]
 		}
-		if w.Priority != nil && *w.Priority >= 0 && *w.Priority <= 3 {
-			f.Priority = *w.Priority
+		if w.Priority.ok {
+			f.Priority = w.Priority.value
 		}
 		f.Title = strings.TrimSpace(title)
 		if f.End < f.Start {
@@ -132,8 +274,7 @@ func lastReviewObject(output string) (wireResult, bool) {
 		if _, has := probe["findings"]; !has {
 			continue
 		}
-		var w wireResult
-		if json.NewDecoder(strings.NewReader(output[i:])).Decode(&w) == nil {
+		if w, valid := decodeWire(probe); valid {
 			found, ok = w, true
 			i += int(dec.InputOffset()) - 1
 		}

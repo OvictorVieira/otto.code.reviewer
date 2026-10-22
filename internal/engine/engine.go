@@ -58,7 +58,6 @@ type Command struct {
 	Dir        string
 	Stdin      string
 	OutputFile string // read after the run when set (codex)
-	PromptFile string // written before the run when set (opencode)
 }
 
 // BuildCommand maps a spec to the CLI flags of each tool. With Verify the
@@ -111,8 +110,9 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		}
 		c.Args = append(c.Args, req.Prompt)
 	case "opencode":
-		// Inside the checkout: opencode will not read a file outside the project directory.
-		c.PromptFile = filepath.Join(req.Dir, ".otto-review-prompt.md")
+		// The prompt goes on stdin: attaching a large file with -f makes opencode stall before it
+		// reaches the model, while the same text on stdin is answered in seconds.
+		c.Stdin = req.Prompt
 		if req.Verify {
 			c.Args = []string{"run", "--auto"}
 		} else {
@@ -125,8 +125,8 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		if s.Effort != "" {
 			c.Args = append(c.Args, "--variant", s.Effort)
 		}
-		c.Args = append(c.Args, "-f", c.PromptFile, "--",
-			"Follow the code review instructions in the attached file exactly and answer only with the JSON it asks for.")
+		c.Args = append(c.Args, "--",
+			"Follow the code review instructions in the input exactly and answer only with the JSON it asks for.")
 	case "copilot":
 		c.Args = []string{
 			"-p", req.Prompt,
@@ -192,12 +192,6 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if c.PromptFile != "" {
-		if err := os.WriteFile(c.PromptFile, []byte(req.Prompt), 0o600); err != nil {
-			return "", err
-		}
-		defer os.Remove(c.PromptFile)
-	}
 	if c.OutputFile != "" {
 		defer os.Remove(c.OutputFile)
 	}
@@ -257,6 +251,7 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 
 	var stopReason string
 	retryNotices := 0
+	var stderrTracker errorTracker
 	// stopEarly ends an engine that reported a failure but would keep retrying. It waits a
 	// moment so the rest of a multi-line error body arrives before the process is killed.
 	stopEarly := func(reason string) {
@@ -276,7 +271,7 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 			if line != "" {
 				dst.WriteString(line)
 				if isStderr {
-					if isQuotaMessage(line) {
+					if stderrTracker.inError(line) && isQuotaMessage(line) {
 						cancelForQuota(line)
 					} else if reason := stuckSignal(c.Bin, line, &retryNotices); reason != "" {
 						stopEarly(reason)
@@ -343,8 +338,8 @@ finished:
 	}
 	if stopped != "" {
 		stderrOutput := stderrText.String()
-		if isQuotaMessage(stderrOutput) {
-			return "", &QuotaError{Details: tail(stderrOutput, 1000)}
+		if errs := errorBlocks(stderrOutput); isQuotaMessage(errs) {
+			return "", &QuotaError{Details: tail(errs, 1000)}
 		}
 		return "", fmt.Errorf("%s: %s: %s", c.Bin, stopped, tail(stderrOutput, 400))
 	}
@@ -353,10 +348,14 @@ finished:
 			return "", fmt.Errorf("%s: %w", c.Bin, ctx.Err())
 		}
 		stderrOutput := stderrText.String()
-		if isQuotaMessage(stderrOutput) || (c.Bin != "copilot" && isQuotaMessage(stdoutText.String())) {
-			details := stderrOutput
-			if details == "" {
-				details = stdoutText.String()
+		stderrErrors, stdoutErrors := errorBlocks(stderrOutput), ""
+		if c.Bin != "copilot" {
+			stdoutErrors = errorBlocks(stdoutText.String())
+		}
+		if isQuotaMessage(stderrErrors) || isQuotaMessage(stdoutErrors) {
+			details := stderrErrors
+			if !isQuotaMessage(details) {
+				details = stdoutErrors
 			}
 			return "", &QuotaError{Details: tail(details, 1000)}
 		}
@@ -393,7 +392,7 @@ func stuckSignal(bin, line string, retryNotices *int) string {
 	if bin == "opencode" && opencodeFail.MatchString(line) {
 		return "reported an error"
 	}
-	if retryNotice.MatchString(line) {
+	if retryNotice.MatchString(line) && !strings.ContainsAny(line, "{};=<>") {
 		*retryNotices++
 		if *retryNotices >= retriesBeforeStopping {
 			return "stopped after repeated retries"

@@ -90,27 +90,80 @@ func TestOpencodeAnswerThatMentionsAnErrorIsNotTreatedAsAFailure(t *testing.T) {
 	}
 }
 
-func TestOpencodeReadsTheInstructionsFromInsideTheCheckoutAndTheFileIsRemovedAfterwards(t *testing.T) {
-	// Regression: the instructions file was written to the temp directory, outside the project.
-	// opencode's plan agent cannot read outside it (external_directory is auto-rejected when it
-	// runs unattended), so every review ended with "The user rejected permission".
-	fakeCLI(t, "opencode", `dir=""; file=""
-while [ $# -gt 0 ]; do
-  case "$1" in --dir) dir="$2"; shift;; -f) file="$2"; shift;; esac
-  shift
+func TestOpencodeGetsALargePromptOnStdinNotAsAnAttachedFile(t *testing.T) {
+	// Regression: a large review prompt attached with -f made opencode stall before it ever
+	// reached the model (and, outside the project, trigger a rejected external_directory read).
+	// The same prompt on stdin is answered in seconds.
+	fakeCLI(t, "opencode", `for arg in "$@"; do
+  if [ "$arg" = "-f" ]; then echo "Error: a large attached file hangs opencode" >&2; sleep 30; fi
 done
-case "$file" in
-  "$dir"/*) if [ -f "$file" ]; then printf 'review done'; else echo "Error: instructions file is missing" >&2; fi;;
-  *) printf 'Error: The user rejected permission to use this specific tool call.\n' >&2; sleep 5;;
-esac`)
+input=$(cat)
+case "$input" in *"FINAL INSTRUCTION"*) printf 'review done';; *) echo "Error: the prompt did not arrive on stdin" >&2;; esac`)
+	prompt := strings.Repeat("filler line of a long review prompt\n", 3000) + "FINAL INSTRUCTION: answer with JSON\n"
 	checkout := t.TempDir()
 
-	out, err := CLI{Spec: Spec{Name: "opencode"}}.Run(context.Background(), Request{Prompt: "review this", Dir: checkout, OutFile: filepath.Join(t.TempDir(), "out")})
+	out, err := CLI{Spec: Spec{Name: "opencode"}}.Run(context.Background(), Request{Prompt: prompt, Dir: checkout, OutFile: filepath.Join(t.TempDir(), "out")})
 
 	if err != nil || out != "review done" {
-		t.Fatalf("out = %q, err = %v, want the engine to read the instructions inside the checkout", out, err)
+		t.Fatalf("out = %q, err = %v, want the prompt delivered on stdin", out, err)
 	}
 	if entries, _ := os.ReadDir(checkout); len(entries) != 0 {
-		t.Errorf("the instructions file must be removed from the checkout after the run, found %d entries", len(entries))
+		t.Errorf("the checkout must be left untouched, found %d entries", len(entries))
+	}
+}
+
+func TestCodeFromTheReviewedPullRequestIsNeverMistakenForAUsageLimit(t *testing.T) {
+	// Regression: opencode echoes what it reads to stderr. A pull request that itself contains
+	// rate limiting code ("Too many requests", 429) made Otto stop the review as "quota exceeded".
+	fakeCLI(t, "opencode", `printf '→ Read apps/api/src/http/rateLimit.ts\n' >&2
+printf '    return c.json({ error: "Too many requests", code: "rate_limited" }, 429);\n' >&2
+printf '    // retry after the rate limit exceeded window, see status code 429 handling\n' >&2
+printf '  if (res.status === 429) throw new Error("rate limit exceeded");\n' >&2
+printf 'review done'`)
+
+	out, err := CLI{Spec: Spec{Name: "opencode"}}.Run(context.Background(), Request{Prompt: "review", Dir: t.TempDir(), OutFile: filepath.Join(t.TempDir(), "out")})
+
+	if err != nil || out != "review done" {
+		t.Fatalf("out = %q, err = %v: code that merely mentions rate limits must not stop the review", out, err)
+	}
+}
+
+func TestAnEngineErrorThatSpansSeveralLinesIsStillRecognizedAsAUsageLimit(t *testing.T) {
+	fakeCLI(t, "opencode", `printf '→ Read a.go\n' >&2
+printf 'Error: {\n  "name": "APIError",\n  "data": {\n    "message": "Rate limit exceeded. Please try again later."\n  }\n}\n' >&2
+sleep 30`)
+
+	_, err := runStuck(t, "opencode")
+
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want a quota failure from the error block", err)
+	}
+}
+
+func TestCodexStyleUsageLimitLineStopsTheEngine(t *testing.T) {
+	fakeCLI(t, "codex", `printf 'ERROR: You’ve hit your usage limit. Upgrade to Plus, or try again at Nov 18th, 2026 6:28 PM.\n' >&2; sleep 30`)
+
+	_, err := runStuck(t, "codex")
+
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want a quota failure", err)
+	}
+}
+
+func TestErrorBlocksKeepOnlyErrorLinesAndWhatFollowsThem(t *testing.T) {
+	text := "→ Read a.ts\n" +
+		"    return c.json({ error: \"Too many requests\" }, 429);\n" +
+		"\x1b[91mError: \x1b[0m{\n  \"message\": \"Rate limit exceeded\"\n}\n" +
+		"ActionRequiredError: You've hit your usage limit\n"
+	got := errorBlocks(text)
+	for _, want := range []string{"Error: {", "Rate limit exceeded", "ActionRequiredError: You've hit your usage limit"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error blocks missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"Too many requests", "Read a.ts"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("error blocks must not include %q:\n%s", unwanted, got)
+		}
 	}
 }

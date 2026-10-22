@@ -72,11 +72,11 @@ func TestOpencodeCommandUsesPlanAgentAndVariant(t *testing.T) {
 			t.Errorf("args %v missing %v", c.Args, want)
 		}
 	}
-	if c.PromptFile == "" || !slices.Contains(c.Args, c.PromptFile) {
-		t.Errorf("opencode must attach the prompt as a file: %+v", c)
+	if c.Stdin != "review this" {
+		t.Errorf("opencode must receive the prompt on stdin, got %q", c.Stdin)
 	}
-	if !strings.HasPrefix(c.PromptFile, "/wt/") {
-		t.Errorf("the prompt file %q must live inside the checkout /wt: opencode refuses to read outside the project directory", c.PromptFile)
+	if slices.Contains(c.Args, "-f") {
+		t.Errorf("opencode must not attach the prompt with -f: a large attached file makes it hang before it reaches the model: %v", c.Args)
 	}
 }
 
