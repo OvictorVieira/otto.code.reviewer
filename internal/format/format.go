@@ -5,6 +5,7 @@ package format
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
@@ -158,47 +159,82 @@ func QuotaFailure(err error) string {
 }
 
 var failureWords = map[bool]struct {
-	title, intro, next, unexpected string
-	kinds                          map[engine.FailureKind]string
-	reset                          string
+	title, intro, unexpected, reset string
+	todo, logNote, retry            string
+	kinds                           map[engine.FailureKind]string
+	hints                           map[engine.FailureKind]string
+	genericHint                     string
 }{
 	true: {
 		title:      "### Otto não conseguiu concluir este review",
 		intro:      "Nenhum dos motores configurados conseguiu analisar o pull request:",
-		next:       "Espere o limite renovar, faça login no motor ou adicione outro com `otto setup`. Os detalhes técnicos ficam no log do Otto, na máquina onde ele roda.\n\nDepois comente `%s` para tentar de novo.",
 		unexpected: "Ocorreu um erro inesperado antes ou durante a análise.",
 		reset:      " (informado pelo provedor: %s)",
+		todo:       "**O que fazer:**",
+		logNote:    "Os detalhes técnicos ficam no log do Otto, na máquina onde ele roda.",
+		retry:      "Depois comente `%s` para tentar de novo.",
 		kinds: map[engine.FailureKind]string{
 			engine.FailQuota: "limite de uso atingido", engine.FailAuth: "não está autenticado",
-			engine.FailMissing: "não está instalado ou não foi encontrado", engine.FailBusy: "o provedor está sobrecarregado ou o motor tentou de novo várias vezes sem sucesso", engine.FailPermission: "não teve permissão para ler um arquivo de que precisava", engine.FailNetwork: "falha de conexão",
+			engine.FailMissing: "não está instalado ou não foi encontrado", engine.FailBusy: "o provedor está sobrecarregado ou o motor tentou de novo várias vezes sem sucesso",
+			engine.FailPermission: "não teve permissão para ler um arquivo de que precisava", engine.FailNetwork: "falha de conexão",
 			engine.FailTimeout: "demorou demais e foi interrompido", engine.FailInvalid: "respondeu em um formato que o Otto não conseguiu usar",
 			engine.FailOther: "falhou por um motivo inesperado",
 		},
+		hints: map[engine.FailureKind]string{
+			engine.FailQuota:   "Espere o limite renovar ou adicione outro motor com `otto setup`.",
+			engine.FailAuth:    "Entre na conta do motor (rode o comando dele no terminal) ou escolha outro com `otto setup`.",
+			engine.FailMissing: "Instale o motor ou tire-o da lista com `otto setup`.",
+			engine.FailBusy:    "Isso costuma ser passageiro: tente de novo em alguns minutos.",
+			engine.FailNetwork: "Isso costuma ser passageiro: tente de novo em alguns minutos.",
+			engine.FailTimeout: "Isso costuma ser passageiro: tente de novo em alguns minutos.",
+			engine.FailInvalid: "O modelo não seguiu o formato pedido, o que é mais comum em modelos pequenos ou gratuitos. Tente de novo ou escolha um modelo mais forte com `otto setup`.",
+		},
+		genericHint: "Veja o motivo no log do Otto e, se repetir, escolha outro motor ou modelo com `otto setup`.",
 	},
 	false: {
 		title:      "### Otto could not finish this review",
 		intro:      "None of the configured engines could analyze the pull request:",
-		next:       "Wait for the limit to reset, sign in to the engine, or add another one with `otto setup`. Technical details are in Otto's log, on the machine where it runs.\n\nThen comment `%s` to try again.",
 		unexpected: "An unexpected error happened before or during the analysis.",
 		reset:      " (reported by the provider: %s)",
+		todo:       "**What to do:**",
+		logNote:    "Technical details are in Otto's log, on the machine where it runs.",
+		retry:      "Then comment `%s` to try again.",
 		kinds: map[engine.FailureKind]string{
 			engine.FailQuota: "usage limit reached", engine.FailAuth: "not signed in",
-			engine.FailMissing: "not installed or not found", engine.FailBusy: "the provider is overloaded or the engine kept retrying without success", engine.FailPermission: "was not allowed to read a file it needed", engine.FailNetwork: "connection problem",
+			engine.FailMissing: "not installed or not found", engine.FailBusy: "the provider is overloaded or the engine kept retrying without success",
+			engine.FailPermission: "was not allowed to read a file it needed", engine.FailNetwork: "connection problem",
 			engine.FailTimeout: "took too long and was stopped", engine.FailInvalid: "answered in a format Otto could not use",
 			engine.FailOther: "failed for an unexpected reason",
 		},
+		hints: map[engine.FailureKind]string{
+			engine.FailQuota:   "Wait for the limit to reset or add another engine with `otto setup`.",
+			engine.FailAuth:    "Sign in to the engine (run its command in a terminal) or pick another with `otto setup`.",
+			engine.FailMissing: "Install the engine or remove it from the list with `otto setup`.",
+			engine.FailBusy:    "This is usually temporary: try again in a few minutes.",
+			engine.FailNetwork: "This is usually temporary: try again in a few minutes.",
+			engine.FailTimeout: "This is usually temporary: try again in a few minutes.",
+			engine.FailInvalid: "The model did not follow the requested format, which is more common with small or free models. Try again or pick a stronger model with `otto setup`.",
+		},
+		genericHint: "See the reason in Otto's log and, if it repeats, pick another engine or model with `otto setup`.",
 	},
 }
 
-// Failure explains why a review could not finish. It names each engine and the
-// kind of problem, and never repeats raw engine output, which can contain code
+// Failure explains why a review could not finish. It names each engine and the kind of problem,
+// says what to do about each kind, and never repeats raw engine output, which can contain code
 // from the diff. The detail stays in Otto's own log.
 func Failure(failures []engine.EngineFailure, trigger, language string) string {
 	words := failureWords[strings.Contains(strings.ToLower(language), "portuguese")]
 	var b strings.Builder
 	b.WriteString(words.title + "\n\n")
+	var hints []string
+	addHint := func(hint string) {
+		if !slices.Contains(hints, hint) {
+			hints = append(hints, hint)
+		}
+	}
 	if len(failures) == 0 {
 		b.WriteString(words.unexpected + "\n\n")
+		addHint(words.genericHint)
 	} else {
 		b.WriteString(words.intro + "\n\n")
 		for _, f := range failures {
@@ -207,10 +243,16 @@ func Failure(failures []engine.EngineFailure, trigger, language string) string {
 				fmt.Fprintf(&b, words.reset, f.ResetAt)
 			}
 			b.WriteString("\n")
+			if hint, ok := words.hints[f.Kind]; ok {
+				addHint(hint)
+			} else {
+				addHint(words.genericHint)
+			}
 		}
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, words.next, trigger)
+	fmt.Fprintf(&b, "%s %s\n\n%s\n\n", words.todo, strings.Join(hints, " "), words.logNote)
+	fmt.Fprintf(&b, words.retry, trigger)
 	return b.String()
 }
 

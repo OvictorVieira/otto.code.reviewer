@@ -218,3 +218,46 @@ func TestFailureNamesEveryKindOfProblem(t *testing.T) {
 		}
 	}
 }
+
+func TestFailureAdviceMatchesWhatWentWrong(t *testing.T) {
+	cases := []struct {
+		name     string
+		failures []engine.EngineFailure
+		language string
+		want     []string
+		wantNo   []string
+	}{
+		{"unusable format is not told to wait for a limit", []engine.EngineFailure{{Engine: "opencode", Kind: engine.FailInvalid}}, "Brazilian Portuguese",
+			[]string{"formato pedido", "modelo mais forte", "`otto setup`"}, []string{"limite renovar", "faça login"}},
+		{"usage limit says to wait or add an engine", []engine.EngineFailure{{Engine: "codex", Kind: engine.FailQuota}}, "Brazilian Portuguese",
+			[]string{"limite renovar", "outro motor"}, []string{"formato pedido", "faça login"}},
+		{"not signed in says to sign in", []engine.EngineFailure{{Engine: "claude", Kind: engine.FailAuth}}, "Brazilian Portuguese",
+			[]string{"Entre na conta"}, []string{"limite renovar"}},
+		{"temporary problems say to try again soon", []engine.EngineFailure{{Engine: "cursor", Kind: engine.FailBusy}, {Engine: "copilot", Kind: engine.FailTimeout}}, "Brazilian Portuguese",
+			[]string{"tente de novo em alguns minutos"}, []string{"limite renovar", "formato pedido"}},
+		{"several different problems get each hint once", []engine.EngineFailure{{Engine: "codex", Kind: engine.FailQuota}, {Engine: "claude", Kind: engine.FailAuth}, {Engine: "x", Kind: engine.FailQuota}}, "Brazilian Portuguese",
+			[]string{"limite renovar", "Entre na conta"}, nil},
+		{"english unusable format", []engine.EngineFailure{{Engine: "opencode", Kind: engine.FailInvalid}}, "English",
+			[]string{"did not follow the requested format", "stronger model"}, []string{"limit to reset", "sign in"}},
+		{"unknown problem points at the log", []engine.EngineFailure{{Engine: "e", Kind: engine.FailOther}}, "English",
+			[]string{"Otto's log"}, []string{"limit to reset"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := Failure(c.failures, "@otto-assist review", c.language)
+			for _, want := range c.want {
+				if !strings.Contains(s, want) {
+					t.Errorf("advice missing %q:\n%s", want, s)
+				}
+			}
+			for _, no := range c.wantNo {
+				if strings.Contains(s, no) {
+					t.Errorf("advice must not say %q for this problem:\n%s", no, s)
+				}
+			}
+			if strings.Count(s, "limite renovar")+strings.Count(s, "limit to reset") > 1 {
+				t.Errorf("the same hint must appear once:\n%s", s)
+			}
+		})
+	}
+}
