@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -253,6 +254,19 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 		}
 	}
 
+	var stopReason string
+	retryNotices := 0
+	// stopEarly ends an engine that reported a failure but would keep retrying. It waits a
+	// moment so the rest of a multi-line error body arrives before the process is killed.
+	stopEarly := func(reason string) {
+		quotaMu.Lock()
+		defer quotaMu.Unlock()
+		if stopReason == "" {
+			stopReason = reason
+			time.AfterFunc(stopGrace, cancel)
+		}
+	}
+
 	read := func(r io.Reader, dst *strings.Builder, isStderr bool) {
 		defer readers.Done()
 		reader := bufio.NewReader(r)
@@ -263,6 +277,8 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 				if isStderr {
 					if isQuotaMessage(line) {
 						cancelForQuota(line)
+					} else if reason := stuckSignal(c.Bin, line, &retryNotices); reason != "" {
+						stopEarly(reason)
 					}
 					continue
 				}
@@ -319,10 +335,17 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 
 finished:
 	quotaMu.Lock()
-	quotaErr := quotaMessage
+	quotaErr, stopped := quotaMessage, stopReason
 	quotaMu.Unlock()
 	if quotaErr != "" {
 		return "", &QuotaError{Details: strings.TrimSpace(quotaErr)}
+	}
+	if stopped != "" {
+		stderrOutput := stderrText.String()
+		if isQuotaMessage(stderrOutput) {
+			return "", &QuotaError{Details: tail(stderrOutput, 1000)}
+		}
+		return "", fmt.Errorf("%s: %s: %s", c.Bin, stopped, tail(stderrOutput, 400))
 	}
 	if runErr != nil {
 		if ctx.Err() != nil {
@@ -346,6 +369,36 @@ finished:
 		file = string(b)
 	}
 	return ExtractOutput(c.Bin, stdoutText.String(), file)
+}
+
+// stopGrace is how long an engine that reported a failure may keep writing before it is stopped.
+const stopGrace = 300 * time.Millisecond
+
+// retriesBeforeStopping is how many "retrying (attempt N)" notices an engine may print
+// before Otto concludes it is stuck in a retry loop and stops it.
+const retriesBeforeStopping = 3
+
+var (
+	ansiColors   = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	retryNotice  = regexp.MustCompile(`(?i)\b(retry|retrying|reconnecting)\b[^\n]*attempt\s+\d+`)
+	opencodeFail = regexp.MustCompile(`^Error:`)
+)
+
+// stuckSignal reads one line an engine wrote to stderr and says why the engine should be
+// stopped now, or returns "" to let it carry on. Some CLIs print their error and then keep
+// retrying until the session is released, which would hold the review for the whole timeout.
+func stuckSignal(bin, line string, retryNotices *int) string {
+	line = strings.TrimSpace(ansiColors.ReplaceAllString(line, ""))
+	if bin == "opencode" && opencodeFail.MatchString(line) {
+		return "reported an error"
+	}
+	if retryNotice.MatchString(line) {
+		*retryNotices++
+		if *retryNotices >= retriesBeforeStopping {
+			return "stopped after repeated retries"
+		}
+	}
+	return ""
 }
 
 // Installed reports whether the engine's CLI is on PATH.
@@ -388,7 +441,9 @@ func isQuotaMessage(s string) bool {
 	for _, marker := range []string{
 		"rate limit exceeded", "rate_limit_exceeded", "quota exceeded", "quota_exceeded",
 		"premium request limit", "premium request quota", "out of premium requests",
-		"usage limit reached", "hit your usage limit", "reached your usage limit", "monthly quota exhausted", "monthly request limit", "too many requests",
+		"usage limit reached", "hit your usage limit", "reached your usage limit", "monthly quota exhausted",
+		"credit balance is too low", "insufficient credits", "insufficient_quota", "exceeded your current quota",
+		"resource_exhausted", "resource exhausted", "freeusagelimiterror", "out of credits", "monthly request limit", "too many requests",
 		"status code 429", "http 429", "error 429",
 	} {
 		if strings.Contains(s, marker) {

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +79,47 @@ func TestFailuresIsEmptyForAnErrorThatIsNotEngineFailures(t *testing.T) {
 	}
 	if got := Failures(nil); len(got) != 0 {
 		t.Errorf("failures = %+v, want none", got)
+	}
+}
+
+func TestFailuresRecognizeWhatEachCLIReportsWhenItStops(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		kind FailureKind
+	}{
+		{"claude subscription limit", "claude: Claude AI usage limit reached|1792000000", FailQuota},
+		{"claude credits", "claude: Credit balance is too low", FailQuota},
+		{"claude login", "claude: Invalid API key · Please run /login", FailAuth},
+		{"claude expired token", "claude: OAuth token has expired", FailAuth},
+		{"claude overloaded", `claude: API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}`, FailBusy},
+		{"opencode free tier", `opencode: Error: {"name":"FreeUsageLimitError","data":{"message":"Rate limit exceeded."}}`, FailQuota},
+		{"openai style quota", "codex: You exceeded your current quota, please check your plan", FailQuota},
+		{"google style quota", "gemini: RESOURCE_EXHAUSTED", FailQuota},
+		{"cursor limit", "cursor-agent: ActionRequiredError: You've hit your usage limit", FailQuota},
+		{"repeated retries", "cursor-agent: stopped after repeated retries: Connection lost, reconnecting (attempt 3/10)", FailBusy},
+		{"service unavailable", "copilot: 503 Service Unavailable", FailBusy},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var runs []string
+			p := Pool{Strategy: Priority, Engines: []Engine{fake{"e", "", errors.New(c.text), &runs}}}
+			_, err := p.Run(context.Background(), Request{}, 0, accept)
+			got := Failures(err)
+			if len(got) != 1 || got[0].Kind != c.kind {
+				t.Errorf("failures = %+v, want kind %s", got, c.kind)
+			}
+		})
+	}
+}
+
+func TestClaudeSubscriptionLimitReportsTheResetTheProviderGave(t *testing.T) {
+	var runs []string
+	p := Pool{Strategy: Priority, Engines: []Engine{fake{"claude", "", errors.New("Claude AI usage limit reached|1792000000"), &runs}}}
+	_, err := p.Run(context.Background(), Request{}, 0, accept)
+
+	got := Failures(err)
+	if len(got) != 1 || got[0].Kind != FailQuota || !strings.Contains(got[0].ResetAt, "2026") {
+		t.Errorf("failures = %+v, want a quota failure with the reset date", got)
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // FailureKind says why one engine could not produce a review, in terms a person can act on.
@@ -14,6 +16,7 @@ const (
 	FailQuota   FailureKind = "quota"
 	FailAuth    FailureKind = "auth"
 	FailMissing FailureKind = "missing"
+	FailBusy    FailureKind = "busy"
 	FailNetwork FailureKind = "network"
 	FailTimeout FailureKind = "timeout"
 	FailInvalid FailureKind = "invalid"
@@ -55,7 +58,11 @@ func Failures(err error) []EngineFailure {
 	return out
 }
 
-var tryAgainAt = regexp.MustCompile(`(?i)try again at ([^\n]+?)\.?\s*(?:\n|$)`)
+var (
+	tryAgainAt = regexp.MustCompile(`(?i)try again at ([^\n]+?)\.?\s*(?:\n|$)`)
+	// Claude's subscription limit names its reset as a Unix time after a pipe.
+	claudeLimitReset = regexp.MustCompile(`(?i)usage limit reached\|(\d{9,11})`)
+)
 
 func classify(e *EngineError) EngineFailure {
 	text := e.Err.Error()
@@ -66,10 +73,12 @@ func classify(e *EngineError) EngineFailure {
 	case errors.As(e.Err, &quota) || isQuotaMessage(text):
 		failure.Kind = FailQuota
 		failure.ResetAt = resetNote(quota, text)
-	case containsAny(lower, "not logged in", "please run /login", "log in", "login required", "unauthorized", "authentication", "not authenticated", "invalid api key"):
+	case containsAny(lower, "not logged in", "please run /login", "log in", "login required", "unauthorized", "authentication", "not authenticated", "invalid api key", "invalid x-api-key", "token has expired", "invalid authentication"):
 		failure.Kind = FailAuth
 	case containsAny(lower, "executable file not found"):
 		failure.Kind = FailMissing
+	case containsAny(lower, "overloaded", "service unavailable", "repeated retries", "at capacity"):
+		failure.Kind = FailBusy
 	case containsAny(lower, "dial tcp", "no such host", "connection lost", "connection refused", "connection reset", "network is unreachable", "i/o timeout"):
 		failure.Kind = FailNetwork
 	case errors.Is(e.Err, context.DeadlineExceeded) || containsAny(lower, "deadline exceeded", "timed out", "timeout"):
@@ -92,6 +101,11 @@ func resetNote(quota *QuotaError, text string) string {
 				return note
 			}
 			return ""
+		}
+	}
+	if m := claudeLimitReset.FindStringSubmatch(text); m != nil {
+		if unix, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			return time.Unix(unix, 0).Local().Format("Jan 2, 2006 3:04 PM MST")
 		}
 	}
 	if m := tryAgainAt.FindStringSubmatch(text); m != nil {

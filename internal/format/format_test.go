@@ -207,7 +207,7 @@ func TestFailureWithoutEngineDetailsStaysGeneric(t *testing.T) {
 
 func TestFailureNamesEveryKindOfProblem(t *testing.T) {
 	kinds := map[engine.FailureKind]string{
-		engine.FailQuota: "usage limit reached", engine.FailAuth: "not signed in", engine.FailMissing: "not installed",
+		engine.FailQuota: "usage limit reached", engine.FailAuth: "not signed in", engine.FailMissing: "not installed", engine.FailBusy: "overloaded or the engine kept retrying",
 		engine.FailTimeout: "took too long", engine.FailNetwork: "connection problem",
 		engine.FailInvalid: "answered in a format Otto could not use", engine.FailOther: "failed for an unexpected reason",
 	}
