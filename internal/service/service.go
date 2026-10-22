@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -71,22 +72,32 @@ func Install() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		return "", err
 	}
-	f, err := os.Create(plistPath)
-	if err != nil {
+	var rendered bytes.Buffer
+	if err := plist.Execute(&rendered, map[string]string{
+		"Label": Label, "Exe": exe, "Path": os.Getenv("PATH"), "Home": home, "Log": logPath,
+	}); err != nil {
 		return "", err
 	}
-	err = plist.Execute(f, map[string]string{
-		"Label": Label, "Exe": exe, "Path": os.Getenv("PATH"), "Home": home, "Log": logPath,
-	})
-	f.Close()
-	if err != nil {
+	existing, _ := os.ReadFile(plistPath)
+	loaded, _ := Status()
+	if err := os.WriteFile(plistPath, rendered.Bytes(), 0o644); err != nil {
 		return "", err
+	}
+	// A running service that is unchanged is left alone: killing it would cut a review short, and
+	// it reloads a new config or binary by itself once its current review finishes.
+	if !needsStart(existing, rendered.Bytes(), loaded) {
+		return logPath, nil
 	}
 	_ = exec.Command("launchctl", "bootout", domain(), plistPath).Run()
 	if out, err := exec.Command("launchctl", "bootstrap", domain(), plistPath).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("launchctl bootstrap: %w: %s", err, out)
 	}
 	return logPath, nil
+}
+
+// needsStart says whether Install must (re)start the agent: it is not running, or its definition changed.
+func needsStart(existing, rendered []byte, loaded bool) bool {
+	return !loaded || !bytes.Equal(existing, rendered)
 }
 
 // Uninstall stops and removes the launchd agent.

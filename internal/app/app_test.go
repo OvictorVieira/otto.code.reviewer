@@ -668,3 +668,69 @@ func TestWatchDoesNotRestartWhileTheBinaryIsUnchangedOrUnreadable(t *testing.T) 
 		})
 	}
 }
+
+func TestWatchReloadsTheConfigOnlyAfterTheReviewInFlightFinishes(t *testing.T) {
+	var stamp atomic.Value
+	stamp.Store("config-v1")
+	var order []string
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, onRun: func() {
+		order = append(order, "reviewing")
+		stamp.Store("config-v2") // `otto setup` saves a new config while the review is running
+	}})
+	h.app.Cfg.PollInterval = 5 * time.Millisecond
+	h.app.ConfigStamp = func() string { return stamp.Load().(string) }
+	h.app.Restart = func() error { order = append(order, "restart"); return nil }
+	h.host.comments = []trigger.Comment{triggerComment(60, "OvictorVieira")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.app.Watch(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(order, ",") != "reviewing,restart" {
+		t.Errorf("order = %v, want the review to finish before the config is reloaded", order)
+	}
+	if !h.app.State.Done(60) {
+		t.Error("the review that was running must be finished and remembered")
+	}
+}
+
+func TestWatchIgnoresAConfigThatIsMomentarilyUnreadable(t *testing.T) {
+	var calls atomic.Int32
+	stamps := []string{"config-v1", "", "", ""}
+	restarts := 0
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.PollInterval = 5 * time.Millisecond
+	h.app.ConfigStamp = func() string {
+		i := int(calls.Add(1)) - 1
+		if i >= len(stamps) {
+			i = len(stamps) - 1
+		}
+		return stamps[i]
+	}
+	h.app.Restart = func() error { restarts++; return nil }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := h.app.Watch(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if restarts != 0 {
+		t.Errorf("restarts = %d, want none while the config is being rewritten", restarts)
+	}
+}
+
+func TestWatchSaysWhichEnginesAndModelsItLoaded(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "codex", answer: noFindings}, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}, {Name: "claude"}}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if out := h.out.String(); !strings.Contains(out, "engines: codex (gpt-6-luna, medium), claude (default)") {
+		t.Errorf("log does not say which engines were loaded:\n%s", out)
+	}
+}

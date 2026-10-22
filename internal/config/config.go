@@ -103,6 +103,21 @@ func Load() (Config, error) {
 	return c, nil
 }
 
+// Stamp identifies the current content of the config file (modification time and size), so a
+// running watcher can notice that `otto setup` or a hand edit changed it. It is empty when the
+// file is missing or empty, which is how a file looks for a moment while it is being rewritten.
+func Stamp() string {
+	p, err := Path()
+	if err != nil {
+		return ""
+	}
+	info, err := os.Stat(p)
+	if err != nil || info.Size() == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d-%d", info.ModTime().UnixNano(), info.Size())
+}
+
 // Save writes the config file.
 func Save(c Config) (string, error) {
 	p, err := Path()

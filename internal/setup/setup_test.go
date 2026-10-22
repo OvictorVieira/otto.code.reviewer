@@ -271,3 +271,65 @@ func TestCtrlCQuitsWithoutFinishing(t *testing.T) {
 		t.Errorf("quit %v finished %v", d.w.quit, d.w.finished)
 	}
 }
+
+// startWith opens the wizard the way `otto setup` does when a config already exists.
+func startWith(t *testing.T, cfg config.Config, catalog map[string][]engine.Model) *driver {
+	t.Helper()
+	dep := deps()
+	dep.Catalog = func(name string) []engine.Model { return catalog[name] }
+	w := newWizard(dep, cfg, []string{"acme/api", "acme/web"})
+	w.spin.Spinner.FPS = time.Millisecond
+	d := &driver{t: t, w: w}
+	d.run(w.Init())
+	return d
+}
+
+func TestChangingTheModelOfAnEngineAlreadyConfiguredReplacesTheSavedOne(t *testing.T) {
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	catalog := map[string][]engine.Model{"codex": {
+		{ID: "gpt-6-luna", Name: "gpt-6-luna", Efforts: []string{"low", "medium", "high"}},
+		{ID: "gpt-6-sol", Name: "gpt-6-sol", Efforts: []string{"low", "medium", "high"}},
+		{ID: "gpt-5.6-terra", Name: "gpt-5.6-terra", Efforts: []string{"low", "medium", "high"}},
+	}}
+	d := startWith(t, cfg, catalog)
+
+	d.key(tea.KeyEnter) // repos
+	d.key(tea.KeyEnter) // engines: codex is already checked, enter keeps it
+	if !strings.Contains(d.screen(), "codex · select model") {
+		t.Fatalf("expected codex's model list:\n%s", d.screen())
+	}
+	d.key(tea.KeyDown, tea.KeyEnter) // move off the current model and pick the next one
+
+	got := d.w.cfg.Engines
+	if len(got) != 1 || got[0].Name != "codex" {
+		t.Fatalf("engines = %+v", got)
+	}
+	if got[0].Model == "gpt-6-luna" || got[0].Model == "" {
+		t.Errorf("model = %q: the model picked in the wizard was not applied", got[0].Model)
+	}
+	if got[0].Effort != "" {
+		t.Errorf("effort = %q, want it cleared until chosen again for the new model", got[0].Effort)
+	}
+}
+
+func TestAddingAnotherEngineKeepsTheOneAlreadyConfiguredAndItsModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	d := startWith(t, cfg, catalogs)
+
+	d.key(tea.KeyEnter)                                        // repos
+	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeySpace) // claude, codex, cursor, opencode: also check opencode
+	d.key(tea.KeyEnter)
+
+	var names []string
+	for _, e := range d.w.cfg.Engines {
+		names = append(names, e.Name)
+	}
+	if strings.Join(names, ",") != "codex,opencode" {
+		t.Fatalf("engines = %v, want codex and opencode", names)
+	}
+	if got := d.w.cfg.Engines[0]; got.Model != "gpt-6-luna" || got.Effort != "medium" {
+		t.Errorf("codex = %+v, want its saved model and effort kept", got)
+	}
+}

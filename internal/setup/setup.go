@@ -568,7 +568,7 @@ func Run(ctx context.Context, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "\nOtto is watching in the background. Logs: %s\n", logPath)
+		fmt.Fprintf(out, "\nOtto is watching in the background. If it was already running, it loads this config by itself once the review in progress finishes. Logs: %s\n", logPath)
 	}
 	fmt.Fprintf(out, "\nDone. Comment `%s` on a pull request, or run `otto review <pr-url>`.\n", w.cfg.Trigger)
 	return nil

@@ -69,3 +69,39 @@ func TestSaveThenLoadKeepsEverySetting(t *testing.T) {
 		t.Errorf("round trip lost data:\n got %+v\nwant %+v", got, want)
 	}
 }
+
+func TestStampChangesWhenTheConfigIsRewrittenAndIsEmptyWhenUnreadableOrEmpty(t *testing.T) {
+	t.Setenv("OTTO_HOME", t.TempDir())
+	if got := Stamp(); got != "" {
+		t.Fatalf("stamp without a config = %q, want empty", got)
+	}
+
+	c := Default()
+	c.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna"}}
+	if _, err := Save(c); err != nil {
+		t.Fatal(err)
+	}
+	before := Stamp()
+	if before == "" {
+		t.Fatal("stamp of a saved config must not be empty")
+	}
+	if Stamp() != before {
+		t.Error("stamp must be stable while the config does not change")
+	}
+
+	c.Engines = append(c.Engines, engine.Spec{Name: "opencode", Model: "opencode/beam-free"})
+	if _, err := Save(c); err != nil {
+		t.Fatal(err)
+	}
+	if Stamp() == before {
+		t.Error("stamp must change after the config is saved again")
+	}
+
+	path, _ := Path()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := Stamp(); got != "" {
+		t.Errorf("stamp of a file being rewritten (empty) = %q, want empty so no restart reads a half-written config", got)
+	}
+}

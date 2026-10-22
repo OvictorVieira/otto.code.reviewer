@@ -81,6 +81,10 @@ type App struct {
 	// point: between cycles, after any review in progress has finished. Nil disables the check.
 	Fingerprint func() string
 
+	// ConfigStamp identifies the config file's content. A change while the watcher runs (setup or
+	// a hand edit) makes it reload the config the same safe way. Nil disables the check.
+	ConfigStamp func() string
+
 	// Bot returns a token that makes GitHub writes come from Otto's own
 	// identity for repo. Nil when no GitHub App is configured.
 	Bot func(ctx context.Context, repo string) (string, error)
@@ -108,6 +112,7 @@ func New(out io.Writer) (*App, error) {
 		Cfg: cfg, State: st, Out: out, Bot: bot,
 		Restart:     update.Restart,
 		Fingerprint: update.Fingerprint,
+		ConfigStamp: config.Stamp,
 		Host:        github.CLI{},
 		Checkouts:   gitCheckouts{},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
@@ -339,12 +344,13 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 		allowed = []string{login}
 	}
 	a.logf("watching as %s, trigger %q, every %s", login, a.Cfg.Trigger, a.Cfg.PollInterval)
-	startedAs := a.fingerprint()
+	a.logf("engines: %s", a.engineSummary())
+	startedAs, configStartedAs := a.fingerprint(), a.configStamp()
 
 	var repos []string
 	var reposAt time.Time
 	for {
-		if a.selfUpdate(ctx) || a.restartForNewBinary(startedAs) {
+		if a.selfUpdate(ctx) || a.restartForChanges(startedAs, configStartedAs) {
 			return nil // only reached when Restart returns (tests); normally the process is replaced
 		}
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
@@ -384,15 +390,47 @@ func (a *App) fingerprint() string {
 	return a.Fingerprint()
 }
 
-// restartForNewBinary restarts into the binary on disk when an update replaced it since this
-// process started. It runs between cycles, so a review in progress always finishes first,
-// and the process is replaced in place, so no old copy keeps running next to the new one.
-func (a *App) restartForNewBinary(startedAs string) bool {
-	now := a.fingerprint()
-	if startedAs == "" || now == "" || now == startedAs || a.Restart == nil {
+func (a *App) configStamp() string {
+	if a.ConfigStamp == nil {
+		return ""
+	}
+	return a.ConfigStamp()
+}
+
+// engineSummary lists the engines and models this process loaded, so the log shows what it uses.
+func (a *App) engineSummary() string {
+	var parts []string
+	for _, e := range a.Cfg.Engines {
+		model, effort := e.Model, e.Effort
+		if model == "" {
+			model = "default"
+		}
+		detail := model
+		if effort != "" {
+			detail += ", " + effort
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, detail))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// restartForChanges restarts into the binary and config on disk when an update replaced the
+// binary or `otto setup` rewrote the config since this process started. It runs between cycles,
+// so a review in progress always finishes first, and the process is replaced in place, so no old
+// copy keeps running next to the new one. A binary or config that is unreadable for a moment
+// while being rewritten is ignored until it is readable again.
+func (a *App) restartForChanges(binaryAtStart, configAtStart string) bool {
+	changed := func(atStart, now string) bool { return atStart != "" && now != "" && now != atStart }
+	binaryChanged := changed(binaryAtStart, a.fingerprint())
+	configChanged := changed(configAtStart, a.configStamp())
+	if (!binaryChanged && !configChanged) || a.Restart == nil {
 		return false
 	}
-	a.logf("the Otto binary was updated; restarting into the new version")
+	if configChanged {
+		a.logf("the Otto config was changed; reloading it")
+	} else {
+		a.logf("the Otto binary was updated; restarting into the new version")
+	}
 	if err := a.Restart(); err != nil {
 		a.logf("restart failed, still running the old version: %v", err)
 		return false
