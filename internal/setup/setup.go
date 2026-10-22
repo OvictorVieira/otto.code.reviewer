@@ -46,6 +46,8 @@ type nested struct {
 }
 
 type step struct {
+	// root marks a screen that esc leaves for the menu, not for the screen before it.
+	root bool
 	// prep returns a label and a function when the step must fetch something
 	// first; the wizard shows a spinner while it runs.
 	prep func() (label string, fetch func())
@@ -89,6 +91,12 @@ type wizard struct {
 	previous             map[string]engine.Spec
 	catalogs             map[string][]engine.Model
 	service              bool
+
+	// menu mode: a saved config opens a menu of what to change, and each change comes back to it.
+	menu      bool
+	finishing bool   // "Save and exit" was chosen
+	menuLast  string // the menu row to open on
+	chainLast string // the models row to open on
 
 	steps  []step
 	i, dir int
@@ -148,12 +156,18 @@ func (w *wizard) set(u ui, done func([]string) *nested, isNested bool) tea.Cmd {
 
 func (w *wizard) advance(dir int) tea.Cmd {
 	w.dir = dir
+	if w.quit {
+		return tea.Quit
+	}
 	n := w.i + dir
 	if n < 0 {
 		w.quit = true // esc on the first step leaves the setup, like ctrl+c, saving nothing
 		return tea.Quit
 	}
 	if n >= len(w.steps) {
+		if w.menu && !w.finishing {
+			return w.toMenu()
+		}
 		w.finished = true
 		return tea.Quit
 	}
@@ -198,6 +212,9 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case picker.Back:
 		if w.nested {
 			return w, w.display() // rebuild the step the nested screen came from
+		}
+		if w.menu && w.steps[w.i].root {
+			return w, w.toMenu()
 		}
 		return w, w.advance(-1)
 	case picker.Picked:
@@ -297,7 +314,7 @@ func (w *wizard) stepEngines() step {
 				spec.Name = name
 				w.cfg.Engines = append(w.cfg.Engines, spec)
 			}
-			w.steps = append(w.steps[:2], w.engineSteps()...)
+			w.steps = append(w.steps[:w.i+1], w.engineSteps()...)
 			return nil
 		}
 	}}
@@ -588,14 +605,14 @@ func Run(ctx context.Context, out io.Writer) error {
 		return err
 	}
 
-	cfg := config.Default()
-	if old, err := config.Load(); err == nil {
-		cfg = old
-	}
+	cfg, menu := openingConfig(config.Load)
 	cfg.AllowedAuthors = []string{login}
 
 	w := newWizard(defaultDeps(), cfg, repos)
 	w.login = login
+	if menu {
+		w.enableMenu()
+	}
 	if _, err := tea.NewProgram(w, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		return err
 	}

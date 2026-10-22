@@ -102,6 +102,17 @@ The installer starts it for you. It asks:
 
 It can then install Otto as a background service that starts at login.
 
+**Running `otto setup` again opens a menu** instead of repeating every question: pick only what you want to change
+(models and fallback, repositories, who posts the reviews, language, whether to run the project, the background
+service) and come back to the menu after each change. Choose **Save and exit** to keep the changes, or leave with esc
+to discard them. Only the very first setup walks through everything. A running Otto reloads the saved config by itself
+after the review in progress.
+
+**Fallback models.** Under **Models and fallback** the models are a list in the order they are tried. Add another model
+(from another engine, or another model of the same engine), move it up or down, change its model or effort, or remove
+it. With the **Priority** order the first model does every review and the others are used only when it fails; with
+**Rotate** they take turns.
+
 ### 4. Bam. Comment `/otto review` on a pull request.
 
 Otto reacts 👀 within a minute, and posts the review when it is done.
