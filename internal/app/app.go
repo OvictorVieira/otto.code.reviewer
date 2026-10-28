@@ -134,6 +134,7 @@ type Options struct {
 	DryRun           bool         // print instead of posting
 	Instructions     string       // extra focus from the requester
 	PostToken        string       // post as this identity instead of the user's gh login
+	RefreshPostToken bool         // refresh the GitHub App token after a long review
 	Requester        string       // who asked, shown when posting as the bot
 	ShowProgress     bool         // use a transient manual-review display instead of progress log lines
 	PostQuotaFailure bool         // comment on a manual review when an engine reports an exhausted quota
@@ -231,7 +232,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	if err != nil {
 		if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
 			a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
-			post := github.WithToken(ctx, opt.PostToken)
+			post := a.postContext(ctx, repo, opt)
 			if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
 				return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
 			}
@@ -246,10 +247,10 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
 	spec := pool.spec(outcome.Index)
 	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger}
-	if opt.PostToken != "" {
+	if opt.PostToken != "" || opt.RefreshPostToken {
 		meta.Requester = opt.Requester
 	}
-	post := github.WithToken(ctx, opt.PostToken)
+	post := a.postContext(ctx, repo, opt)
 	payload := format.Payload(pr.HeadRefOid, placement, result, meta)
 	report := Report{Engine: spec.Name, Findings: len(placement.Inline) + len(placement.Outside)}
 
@@ -297,6 +298,20 @@ func (a *App) reviewStatus(opt Options, logMessage, progressMessage string) {
 	if logMessage != "" {
 		a.logf("%s", logMessage)
 	}
+}
+
+func (a *App) postContext(ctx context.Context, repo string, opt Options) context.Context {
+	token := opt.PostToken
+	if opt.RefreshPostToken && a.Bot != nil {
+		fresh, err := a.Bot(ctx, repo)
+		if err != nil {
+			a.logf("%s: refreshing the Otto GitHub App token failed, using your GitHub login: %v", repo, err)
+			token = ""
+		} else {
+			token = fresh
+		}
+	}
+	return github.WithToken(ctx, token)
 }
 
 type pool struct {
@@ -518,10 +533,12 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 	write := github.WithToken(ctx, token)
 	_ = a.Host.React(write, req.Repo, req.CommentID, "eyes")
 
-	report, err := a.Review(ctx, req.Repo, req.PR, Options{Instructions: req.Instructions, PostToken: token, Requester: req.Author})
+	opt := Options{Instructions: req.Instructions, PostToken: token, RefreshPostToken: a.Bot != nil, Requester: req.Author}
+	report, err := a.Review(ctx, req.Repo, req.PR, opt)
 	if ctx.Err() != nil {
 		return // shutting down: leave it unmarked so it runs again on restart
 	}
+	write = a.postContext(ctx, req.Repo, opt)
 	a.stateMu.Lock()
 	a.State.MarkDone(req.CommentID, time.Now())
 	delete(a.State.Pending, req.CommentID)

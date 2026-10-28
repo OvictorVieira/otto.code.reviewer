@@ -532,6 +532,29 @@ func TestTriggerFromGitHubIsAnsweredAsTheBot(t *testing.T) {
 	}
 }
 
+func TestWatchRefreshesBotTokenBeforePostingAfterLongReview(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
+	var calls int
+	h.app.Bot = func(context.Context, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "token-that-expired-during-review", nil
+		}
+		return "fresh-token", nil
+	}
+	h.host.comments = []trigger.Comment{triggerComment(34, "OvictorVieira")}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := identities(h); got["review"] != "fresh-token" || got["react"] != "token-that-expired-during-review" {
+		t.Errorf("the review must use the refreshed token, got %v", got)
+	}
+	if calls < 2 {
+		t.Fatalf("bot token was only fetched %d time(s)", calls)
+	}
+}
+
 func TestBotFailureComplaintIsAlsoPostedAsTheBot(t *testing.T) {
 	h := newHarness(t, fakeEngine{name: "claude", err: errors.New("usage limit")})
 	h.withBot("bot-token", nil)
@@ -541,6 +564,26 @@ func TestBotFailureComplaintIsAlsoPostedAsTheBot(t *testing.T) {
 
 	if got := identities(h); got["comment"] != "bot-token" {
 		t.Errorf("failure comment identity = %q, want the bot", got["comment"])
+	}
+}
+
+func TestWatchRefreshesBotTokenBeforeFailureComment(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", err: errors.New("usage limit")})
+	var calls int
+	h.app.Bot = func(context.Context, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "expired-token", nil
+		}
+		return "fresh-token", nil
+	}
+	h.host.comments = []trigger.Comment{triggerComment(35, "OvictorVieira")}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := identities(h); got["comment"] != "fresh-token" || got["react"] != "fresh-token" {
+		t.Errorf("failure response must use the refreshed token, got %v", got)
 	}
 }
 
