@@ -65,6 +65,8 @@ func (g gitCheckouts) Prepare(ctx context.Context, repo string, number int, base
 type App struct {
 	Cfg       config.Config
 	State     *trigger.State
+	stateMu   sync.Mutex
+	logMu     sync.Mutex
 	Out       io.Writer
 	Host      Host
 	Checkouts Checkouts
@@ -121,6 +123,8 @@ func New(out io.Writer) (*App, error) {
 }
 
 func (a *App) logf(format string, args ...any) {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
 	fmt.Fprintf(a.Out, "%s otto: %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 }
 
@@ -218,7 +222,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	}
 	outcome, err := pool.Run(ctx, engine.Request{
 		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify, Progress: progress,
-	}, a.State.Rotation, accept)
+	}, a.rotation(), accept)
 	if !opt.ShowProgress {
 		for _, f := range outcome.Failures {
 			a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
@@ -235,8 +239,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		return Report{}, err
 	}
 	if opt.Engine == "" {
-		a.State.Rotation = outcome.Next
-		_ = a.State.Save()
+		a.setRotation(outcome.Next)
 	}
 
 	result, _ := review.ParseResult(outcome.Output, wt.Dir())
@@ -331,10 +334,9 @@ func (a *App) pool(only string, opt Options) (pool, error) {
 	return p, nil
 }
 
-// Watch polls the configured repositories and answers trigger comments.
+// Watch polls repositories while three workers process a durable FIFO queue.
 func (a *App) Watch(ctx context.Context, once bool) error {
 	a.Checkouts.Sweep(2 * a.Cfg.Timeout)
-
 	login, err := a.Host.Login(ctx)
 	if err != nil {
 		return fmt.Errorf("gh is not logged in (run `gh auth login`): %w", err)
@@ -346,33 +348,32 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	a.logf("watching as %s, trigger %q, every %s", login, a.Cfg.Trigger, a.Cfg.PollInterval)
 	a.logf("engines: %s", a.engineSummary())
 	startedAs, configStartedAs := a.fingerprint(), a.configStamp()
-
+	queue := newReviewQueue(a, ctx)
+	queue.start()
+	defer queue.stop()
 	var repos []string
 	var reposAt time.Time
 	for {
 		if a.selfUpdate(ctx) || a.restartForChanges(startedAs, configStartedAs) {
-			return nil // only reached when Restart returns (tests); normally the process is replaced
+			return nil
 		}
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
-			if r, err := a.Host.Repos(ctx); err == nil {
+			if r, e := a.Host.Repos(ctx); e == nil {
 				repos, reposAt = r, time.Now()
 			} else {
-				a.logf("listing repositories failed: %v", err)
+				a.logf("listing repositories failed: %v", e)
 			}
 		} else if !a.Cfg.Repos.All {
 			repos = a.Cfg.Repos.Selected
 		}
-
 		for _, repo := range repos {
 			if ctx.Err() != nil {
 				return nil
 			}
-			a.poll(ctx, repo, allowed)
+			a.poll(ctx, repo, allowed, queue)
 		}
-		a.State.Prune(time.Now(), 30*24*time.Hour)
-		_ = a.State.Save()
-
 		if once {
+			queue.wait()
 			return nil
 		}
 		select {
@@ -381,6 +382,14 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 		case <-time.After(a.Cfg.PollInterval):
 		}
 	}
+}
+
+func (a *App) rotation() int { a.stateMu.Lock(); defer a.stateMu.Unlock(); return a.State.Rotation }
+func (a *App) setRotation(n int) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.State.Rotation = n
+	_ = a.State.Save()
 }
 
 func (a *App) fingerprint() string {
@@ -464,19 +473,33 @@ func (a *App) selfUpdate(ctx context.Context) bool {
 	return true
 }
 
-func (a *App) poll(ctx context.Context, repo string, allowed []string) {
+func (a *App) poll(ctx context.Context, repo string, allowed []string, q *reviewQueue) {
 	started := time.Now()
+	a.stateMu.Lock()
 	since := a.State.Cursor(repo, started.Add(-a.Cfg.Lookback)).Add(-2 * time.Minute)
-	comments, err := a.Host.CommentsSince(ctx, repo, since)
+	a.stateMu.Unlock()
+	// A stuck gh process must not stop polling every other repository.
+	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	comments, err := a.Host.CommentsSince(pollCtx, repo, since)
+	cancel()
 	if err != nil {
 		a.logf("%s: reading comments failed: %v", repo, err)
 		return
 	}
-	for _, req := range trigger.Pending(comments, a.Cfg.Trigger, allowed, a.State.Done) {
-		a.handle(ctx, req)
+	a.stateMu.Lock()
+	requests := trigger.Pending(comments, a.Cfg.Trigger, allowed, func(id int64) bool { return a.State.Done(id) || a.State.Pending[id].CommentID != 0 })
+	a.stateMu.Unlock()
+	for _, req := range requests {
+		if !q.enqueue(req) {
+			return
+		}
 	}
+	a.stateMu.Lock()
 	a.State.SetCursor(repo, started)
-	_ = a.State.Save()
+	if err := a.State.Save(); err != nil {
+		a.logf("%s: saving cursor failed: %v", repo, err)
+	}
+	a.stateMu.Unlock()
 }
 
 func (a *App) handle(ctx context.Context, req trigger.Request) {
@@ -499,8 +522,11 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 	if ctx.Err() != nil {
 		return // shutting down: leave it unmarked so it runs again on restart
 	}
+	a.stateMu.Lock()
 	a.State.MarkDone(req.CommentID, time.Now())
+	delete(a.State.Pending, req.CommentID)
 	_ = a.State.Save()
+	a.stateMu.Unlock()
 
 	if err != nil {
 		a.logf("%s#%d: review failed: %v", req.Repo, req.PR, err)

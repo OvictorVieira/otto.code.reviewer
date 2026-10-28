@@ -41,6 +41,8 @@ func TokenFrom(ctx context.Context) string {
 }
 
 func gh(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if tok := TokenFrom(ctx); tok != "" {
 		cmd.Env = append(os.Environ(), "GH_TOKEN="+tok)

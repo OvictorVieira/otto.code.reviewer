@@ -167,3 +167,14 @@ func TestErrorBlocksKeepOnlyErrorLinesAndWhatFollowsThem(t *testing.T) {
 		}
 	}
 }
+
+func TestSilentOpencodeProcessIsKilledAtReviewDeadline(t *testing.T) {
+	fakeCLI(t, "opencode", `sleep 30`)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := CLI{Spec: Spec{Name: "opencode"}}.Run(ctx, Request{Prompt: "review", Dir: t.TempDir(), OutFile: filepath.Join(t.TempDir(), "out")})
+	if err == nil || time.Since(started) > 3*time.Second {
+		t.Fatalf("silent process was not stopped by deadline: %v", err)
+	}
+}

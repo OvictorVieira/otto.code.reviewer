@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -79,11 +80,15 @@ func (h *fakeHost) PostReview(ctx context.Context, _ string, _ int, payload any)
 	return nil
 }
 func (h *fakeHost) Comment(ctx context.Context, _ string, _ int, body string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.writes = append(h.writes, write{"comment", github.TokenFrom(ctx)})
 	h.plain = append(h.plain, body)
 	return nil
 }
 func (h *fakeHost) React(ctx context.Context, _ string, id int64, content string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.writes = append(h.writes, write{"react", github.TokenFrom(ctx)})
 	h.reactions = append(h.reactions, reaction{id, content})
 	return nil
@@ -95,19 +100,23 @@ func (h *fakeHost) CommentsSince(context.Context, string, time.Time) ([]trigger.
 type fakeCheckout struct {
 	dir     string
 	removed *int
+	mu      *sync.Mutex
 }
 
 func (c fakeCheckout) Dir() string { return c.dir }
-func (c fakeCheckout) Remove()     { *c.removed++ }
+func (c fakeCheckout) Remove()     { c.mu.Lock(); defer c.mu.Unlock(); *c.removed++ }
 
 type fakeCheckouts struct {
+	mu                sync.Mutex
 	prepared, removed int
 	swept             bool
 }
 
 func (f *fakeCheckouts) Prepare(context.Context, string, int, string) (Checkout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.prepared++
-	return fakeCheckout{dir: "/tmp/otto-wt", removed: &f.removed}, nil
+	return fakeCheckout{dir: "/tmp/otto-wt", removed: &f.removed, mu: &f.mu}, nil
 }
 func (f *fakeCheckouts) Sweep(time.Duration) { f.swept = true }
 
@@ -732,5 +741,77 @@ func TestWatchSaysWhichEnginesAndModelsItLoaded(t *testing.T) {
 
 	if out := h.out.String(); !strings.Contains(out, "engines: codex (gpt-6-luna, medium), claude (default)") {
 		t.Errorf("log does not say which engines were loaded:\n%s", out)
+	}
+}
+
+func TestWatchStartsIndependentReviewsConcurrently(t *testing.T) {
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, onRun: func() {
+		started <- struct{}{}
+		<-release
+	}})
+	h.host.comments = []trigger.Comment{triggerComment(101, "OvictorVieira"), triggerComment(102, "OvictorVieira")}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = h.app.Watch(context.Background(), true) }()
+	defer func() { close(release); <-done }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("only %d of 2 reviews started while another was running", i)
+		}
+	}
+}
+
+func TestWatchLimitsActiveReviewsAndAcknowledgesQueue(t *testing.T) {
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, onRun: func() { started <- struct{}{}; <-release }})
+	for i := int64(1); i <= 5; i++ {
+		c := triggerComment(200+i, "OvictorVieira")
+		c.HTMLURL = "https://github.com/" + repo + "/pull/" + fmt.Sprint(i) + "#issuecomment-1"
+		h.host.comments = append(h.host.comments, c)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = h.app.Watch(context.Background(), true) }()
+	defer func() { close(release); <-done }()
+	for i := 0; i < 3; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d reviews started", i)
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("fourth review started before a worker became free")
+	case <-time.After(100 * time.Millisecond):
+	}
+	h.host.mu.Lock()
+	notices := append([]string(nil), h.host.plain...)
+	h.host.mu.Unlock()
+	if len(notices) != 2 || !strings.Contains(notices[0], "posição 4") || !strings.Contains(notices[1], "posição 5") {
+		t.Fatalf("queue notices = %v", notices)
+	}
+}
+
+func TestWatchResumesPersistedQueueWithoutAnotherGitHubComment(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	req := trigger.Request{Repo: repo, PR: 7, CommentID: 707, Author: "OvictorVieira"}
+	h.app.State.Pending[req.CommentID] = req
+	if err := h.app.State.Save(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := trigger.LoadState(h.app.State.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.app.State = state
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.host.posted) != 1 || !h.app.State.Done(707) || len(h.app.State.Pending) != 0 {
+		t.Fatalf("review=%d processed=%v pending=%v", len(h.host.posted), h.app.State.Done(707), h.app.State.Pending)
 	}
 }

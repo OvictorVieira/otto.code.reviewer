@@ -13,12 +13,13 @@ type State struct {
 	Processed map[int64]time.Time  `json:"processed"`
 	Cursors   map[string]time.Time `json:"cursors"`
 	Rotation  int                  `json:"rotation"`
+	Pending   map[int64]Request    `json:"pending,omitempty"`
 	path      string
 }
 
 // LoadState reads the state file, or starts empty when it does not exist.
 func LoadState(path string) (*State, error) {
-	s := &State{Processed: map[int64]time.Time{}, Cursors: map[string]time.Time{}, path: path}
+	s := &State{Processed: map[int64]time.Time{}, Cursors: map[string]time.Time{}, Pending: map[int64]Request{}, path: path}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -34,6 +35,9 @@ func LoadState(path string) (*State, error) {
 	}
 	if s.Cursors == nil {
 		s.Cursors = map[string]time.Time{}
+	}
+	if s.Pending == nil {
+		s.Pending = map[int64]Request{}
 	}
 	return s, nil
 }

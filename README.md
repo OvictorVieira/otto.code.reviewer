@@ -166,7 +166,7 @@ And the summary tells you what was checked:
 /otto review focus on the payment retry logic and the new migration
 ```
 
-Anything after the trigger becomes extra instructions for the reviewer. The trigger can follow other text in the comment, as long as it starts its own line outside a code block. Only comments written by you trigger a review.
+Anything after the trigger becomes extra instructions for the reviewer. The trigger can follow other text in the comment, as long as it starts its own line outside a code block. Only comments written by you trigger a review. The background service runs up to three reviews at once. Additional requests wait in a persisted queue; Otto comments on the PR with the queue position. If the service restarts, pending reviews resume. A review has a configurable deadline (`timeout`), and GitHub calls time out after 30 seconds so one stalled repository cannot block polling indefinitely.
 
 **From the terminal**, on any pull request you can access, watched or not. Handy at work, when you want a review
 without setting anything up in the repository:

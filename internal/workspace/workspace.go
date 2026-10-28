@@ -11,10 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Worktree is a checkout of one pull request head.
+var gitMu sync.Mutex
+
 type Worktree struct {
 	path  string
 	cache string
@@ -57,6 +60,8 @@ func CacheDir() (string, error) {
 // Prepare clones repo if needed, fetches the pull request and the base
 // branch, and checks the pull request head out in a new worktree.
 func Prepare(ctx context.Context, repo string, number int, base string) (*Worktree, error) {
+	gitMu.Lock()
+	defer gitMu.Unlock()
 	root, err := CacheDir()
 	if err != nil {
 		return nil, err
@@ -126,6 +131,8 @@ func Purge() error {
 
 // Remove deletes the worktree and everything the review created in it.
 func (w *Worktree) Remove() {
+	gitMu.Lock()
+	defer gitMu.Unlock()
 	ctx := context.Background()
 	_ = run(ctx, w.cache, "git", "worktree", "remove", "--force", w.path)
 	_ = os.RemoveAll(w.path)
