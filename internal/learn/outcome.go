@@ -15,12 +15,15 @@ type Outcome string
 const (
 	Accepted Outcome = "accepted" // thumbs up, or a reply saying it was fixed
 	Rejected Outcome = "rejected" // thumbs down, or a reply saying it will not be fixed
+	Replied  Outcome = "replied"  // a maintainer answered in words with no clear verdict; the engine reads the reply
 	Resolved Outcome = "resolved" // thread closed with no explicit signal: weakly accepted
 	Open     Outcome = "open"     // no reaction yet
 )
 
 // Settled reports whether the maintainers gave a signal Otto can learn from.
-func (o Outcome) Settled() bool { return o == Accepted || o == Rejected || o == Resolved }
+func (o Outcome) Settled() bool {
+	return o == Accepted || o == Rejected || o == Replied || o == Resolved
+}
 
 // ThreadComment is one comment of a review thread.
 type ThreadComment struct {
@@ -97,8 +100,9 @@ func Extract(repo string, pr int, threads []Thread, now time.Time) []Record {
 	return out
 }
 
-// infer decides the outcome. A written reply is stronger than a reaction, and a
-// reaction is stronger than merely resolving the thread.
+// infer decides the outcome. A reply is the strongest signal because it carries the reason:
+// a verdict in it ("Fixed in", "Won't fix") decides, and any other reply still counts as
+// feedback (Replied) that the engine interprets later. Reactions are optional and weaker.
 func infer(first ThreadComment, replies []string, resolved bool) Outcome {
 	for _, r := range replies {
 		switch {
@@ -113,6 +117,9 @@ func infer(first ThreadComment, replies []string, resolved bool) Outcome {
 		return Rejected
 	case first.Up > 0 && first.Down == 0:
 		return Accepted
+	}
+	if len(replies) > 0 {
+		return Replied
 	}
 	if resolved {
 		return Resolved

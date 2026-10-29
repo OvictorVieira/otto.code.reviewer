@@ -296,8 +296,10 @@ engines:
 
 Otto gets better at your repository the way a developer does: by reading how you react to its findings.
 
-- **What it reads:** your 👍 / 👎 on each finding, your replies (`Fixed in abc`, `Won't fix. <reason>`) and whether the
-  thread was resolved. Replies carry the most weight, because the reason is what teaches.
+- **What it reads:** your replies in each finding's thread, your 👍 / 👎 and whether the thread was resolved.
+  A reply is enough on its own: no reaction needed, and no magic words. `Fixed in abc` and `Won't fix. <reason>` are
+  read as verdicts; any other reply is read by the engine for what it says. Replies carry the most weight, because the
+  reason is what teaches.
 - **What it keeps:** a short list of lessons per repository in `~/.config/otto/learning/` (at most 25, editable).
   The watcher refreshes them in the background every 30 minutes once at least 3 new signals arrived; `otto learn`
   does it on demand.

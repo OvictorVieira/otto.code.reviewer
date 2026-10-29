@@ -55,6 +55,10 @@ Each item is a finding Otto posted, then the maintainers' outcome and their word
 
 - accepted: the finding was useful. Reinforce the pattern worth always checking.
 - rejected: the finding was wrong, noisy or over-engineered for this repository. Write what to stop flagging, and when.
+- replied: a maintainer answered in words without a clear verdict. Read the reply yourself. If it explains why the
+  finding does not apply, treat it as rejected; if it agrees, acknowledges or says it will change, treat it as
+  accepted; if it only asks a question or discusses, learn nothing from it. Replies are the most valuable signal
+  even when nobody reacted with a thumb, so never ignore one.
 - resolved: weak positive signal only; never create a lesson from it alone.
 - A lesson must be general and reusable across pull requests: no PR numbers, no file-specific trivia, no names of people.
   Scope it with a path glob only when it truly applies to part of the repository.

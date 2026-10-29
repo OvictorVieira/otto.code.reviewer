@@ -117,18 +117,24 @@ func SelectLessons(lessons []Lesson, files []string, title string, now time.Time
 }
 
 // SelectPrior keeps the earlier findings on this pull request that still change what
-// Otto should say: rejected ones (with the maintainers' reason) and ones still open.
+// Otto should say: rejected or answered ones (with the maintainers' words) and ones still open.
 // Accepted or resolved findings are fixed already and cost nothing to leave out.
 func SelectPrior(recs []Record) []Record {
 	var keep []Record
 	for _, r := range recs {
-		if r.Outcome == Rejected || r.Outcome == Open {
+		if r.Outcome == Rejected || r.Outcome == Open || r.Outcome == Replied {
 			keep = append(keep, r)
 		}
 	}
+	rank := func(o Outcome) int { // findings the maintainers answered come first
+		if o == Open {
+			return 1
+		}
+		return 0
+	}
 	sort.SliceStable(keep, func(i, j int) bool {
-		if (keep[i].Outcome == Rejected) != (keep[j].Outcome == Rejected) {
-			return keep[i].Outcome == Rejected
+		if rank(keep[i].Outcome) != rank(keep[j].Outcome) {
+			return rank(keep[i].Outcome) < rank(keep[j].Outcome)
 		}
 		return keep[i].Priority < keep[j].Priority
 	})

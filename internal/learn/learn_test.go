@@ -55,6 +55,9 @@ func TestOutcomeInference(t *testing.T) {
 		{"wont fix reply", []string{"Won't fix. tree-shaken"}, 0, 0, true, Rejected},
 		{"reply beats reaction", []string{"Won't fix. no"}, 1, 0, false, Rejected},
 		{"resolved only", nil, 0, 0, true, Resolved},
+		{"free-text reply with no reaction", []string{"Isso e usado so em teste, nao faz sentido mover"}, 0, 0, false, Replied},
+		{"free-text reply on a resolved thread", []string{"entendi, vou deixar assim"}, 0, 0, true, Replied},
+		{"reaction beats an unclassified reply", []string{"hmm"}, 1, 0, false, Accepted},
 		{"nothing", nil, 0, 0, false, Open},
 	}
 	for _, c := range cases {
@@ -263,5 +266,27 @@ func TestSelectPriorKeepsOnlyRejectedAndOpenAndClipsReasons(t *testing.T) {
 	}
 	if len(got[0].Notes) != 1 || len([]rune(got[0].Notes[0])) > 161 {
 		t.Fatalf("reason not clipped: %d", len(got[0].Notes[0]))
+	}
+}
+
+func TestAFreeTextReplyIsLearnedFromEvenWithoutAnyReaction(t *testing.T) {
+	m := Memory{Records: map[string]Record{}}
+	rec := Extract("o/r", 3, []Thread{thread([]string{"Aqui o helper so roda em teste, por isso nao mudei."}, 0, 0, false)}, now)
+	if n := m.Merge(rec); n != 1 || len(m.Unlearned()) != 1 {
+		t.Fatalf("a reply without keywords or reactions must be a learnable signal (n=%d)", n)
+	}
+	p, err := DistillPrompt(nil, m.Unlearned())
+	if err != nil || !strings.Contains(p, "[replied]") || !strings.Contains(p, "helper so roda em teste") {
+		t.Fatalf("the reply text must reach the engine: %v", err)
+	}
+}
+
+func TestSelectPriorKeepsAnsweredFindingsBeforeOpenOnes(t *testing.T) {
+	got := SelectPrior([]Record{
+		{ID: 1, Outcome: Open, Priority: 0, Title: "open p0"},
+		{ID: 2, Outcome: Replied, Priority: 3, Title: "answered", Notes: []string{"reason"}},
+	})
+	if len(got) != 2 || got[0].Outcome != Replied {
+		t.Fatalf("got %+v", got)
 	}
 }
