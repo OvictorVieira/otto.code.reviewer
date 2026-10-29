@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
-// RecommendedGroup is the section at the top of the model list.
-const RecommendedGroup = "Recommended"
+// RecommendedGroup is the section of recommended paid models; RecommendedFreeGroup, at the very top,
+// holds the free ones.
+const (
+	RecommendedGroup     = "Recommended"
+	RecommendedFreeGroup = "Recommended · free"
+)
 
 var tierRank = map[Tier]int{Light: 0, Medium: 1, Heavy: 2}
 
@@ -45,12 +49,15 @@ func OrderModels(engineName string, models []Model) []Model {
 		if tier, ok := RecommendedTier(engineName, m.ID); ok {
 			m.Tier = tier
 			m.Group = RecommendedGroup
+			if RecommendedFree(engineName, m.ID) {
+				m.Group = RecommendedFreeGroup
+			}
 			if m.Note != "" {
 				m.Note = tierDescription[tier] + ". " + m.Note // keep what the catalog says, such as the access limits
 			} else {
 				m.Note = tierDescription[tier]
 			}
-			tag := RecommendedGroup + " · " + string(tier)
+			tag := m.Group + " · " + string(tier)
 			if m.Tag != "" {
 				tag += " · " + m.Tag
 			}
@@ -63,6 +70,9 @@ func OrderModels(engineName string, models []Model) []Model {
 			return a.Tier != ""
 		}
 		if a.Tier != "" {
+			if fa, fb := a.Group == RecommendedFreeGroup, b.Group == RecommendedFreeGroup; fa != fb {
+				return fa // free picks first
+			}
 			return tierRank[a.Tier] < tierRank[b.Tier]
 		}
 		if ba, bb := strings.ToLower(a.Brand), strings.ToLower(b.Brand); ba != bb {

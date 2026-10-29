@@ -26,8 +26,11 @@ import (
 
 const (
 	cliDefault = ""
-	allRepos   = "\x00all"
-	typeModel  = "\x00type"
+	// tiersFree and tiersPaid pick the recommended model for each size of pull request.
+	tiersFree = "\x00tiers-free"
+	tiersPaid = "\x00tiers-paid"
+	allRepos  = "\x00all"
+	typeModel = "\x00type"
 )
 
 // ui is a screen the wizard can show: a list, a text field or a notice.
@@ -346,7 +349,21 @@ func (w *wizard) stepModel(i int) step {
 			spec := &w.cfg.Engines[i]
 			catalog := w.catalogs[spec.Name]
 
-			items := []picker.Item{{Value: cliDefault, Title: "CLI default", Hint: "whatever " + spec.Name + " is set to use", Group: "Default"}}
+			var items []picker.Item
+			for _, free := range []bool{true, false} {
+				_, ok := engine.RecommendedTiers(spec.Name, free)
+				if !ok {
+					continue
+				}
+				title, value := "Recommended for each size", tiersPaid
+				if free {
+					title, value = "Recommended free models for each size", tiersFree
+				}
+				// The hint names no model, so typing a model's name never lands on this row.
+				items = append(items, picker.Item{Value: value, Title: title, Group: "By pull request size",
+					Hint: "a lighter model for small changes, a stronger one for large or risky ones"})
+			}
+			items = append(items, picker.Item{Value: cliDefault, Title: "CLI default", Hint: "whatever " + spec.Name + " is set to use", Group: "Default"})
 			free, known := 0, false
 			for _, m := range catalog {
 				hint := m.Note
@@ -376,7 +393,14 @@ func (w *wizard) stepModel(i int) step {
 				footer = spec.Name + " did not list any model"
 			}
 
-			set := func(model string) { spec.Model = model }
+			set := func(model string) {
+				if model == tiersFree || model == tiersPaid {
+					spec.Tiers, _ = engine.RecommendedTiers(spec.Name, model == tiersFree)
+					spec.Model = spec.Tiers.Medium
+					return
+				}
+				spec.Model, spec.Tiers = model, engine.TierModels{}
+			}
 			m := picker.New(picker.Options{Title: spec.Name + " · select model", Items: items, Selected: spec.Model, Footer: footer})
 			return m, func(vals []string) *nested {
 				if len(vals) == 0 {

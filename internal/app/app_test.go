@@ -72,7 +72,7 @@ func (h *fakeHost) Diff(context.Context, string, int) (string, error) {
 	}
 	return prDiff, nil
 }
-func (h *fakeHost) Repos(context.Context) ([]string, error)           { return []string{repo}, nil }
+func (h *fakeHost) Repos(context.Context) ([]string, error) { return []string{repo}, nil }
 func (h *fakeHost) PostReview(ctx context.Context, _ string, _ int, payload any) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()

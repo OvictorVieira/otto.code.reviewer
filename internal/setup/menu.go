@@ -46,7 +46,7 @@ func (w *wizard) insertAfterCurrent(next ...step) {
 func (w *wizard) engineChain() string {
 	var parts []string
 	for _, e := range w.cfg.Engines {
-		parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, orDefault(e.Model)))
+		parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, modelSummary(e)))
 	}
 	return strings.Join(parts, " → ")
 }
@@ -120,7 +120,7 @@ func (w *wizard) stepChain() step {
 				role = "takes turns"
 			}
 			hint := role
-			items = append(items, picker.Item{Value: fmt.Sprintf("e%d", i), Title: fmt.Sprintf("%d. %s · %s", i+1, e.Name, orDefault(e.Model)), Hint: hint, Group: group})
+			items = append(items, picker.Item{Value: fmt.Sprintf("e%d", i), Title: fmt.Sprintf("%d. %s · %s", i+1, e.Name, modelSummary(e)), Hint: hint, Group: group})
 		}
 		order := "Rotate"
 		if w.cfg.Strategy == engine.Priority {
@@ -229,4 +229,12 @@ func (w *wizard) modelActions(k int) *nested {
 			return nil
 		},
 	}
+}
+
+// modelSummary names the model, or the models per size when the engine has them.
+func modelSummary(e engine.Spec) string {
+	if t := e.Tiers; t.Light != "" || t.Heavy != "" {
+		return fmt.Sprintf("by size: %s / %s / %s", orDefault(t.Light), orDefault(t.Medium), orDefault(t.Heavy))
+	}
+	return orDefault(e.Model)
 }

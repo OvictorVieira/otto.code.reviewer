@@ -313,3 +313,35 @@ func TestPickingAFreeModelSavesExactlyThatIdNotAPaidLookAlike(t *testing.T) {
 		t.Fatal("save and exit must finish the setup")
 	}
 }
+
+func TestTheRecommendedFreeModelsCanBePickedForEverySizeAtOnce(t *testing.T) {
+	d := startMenu(t, configured())
+	d.pick("Models")
+	d.pick("1.")
+	d.pick("Change model")
+	d.shows("Recommended free models for each size", "Recommended for each size")
+	d.pick("Recommended free")
+	d.shows("Models and fallback", "by size:")
+	d.pick("Done")
+
+	e := d.w.cfg.Engines[0]
+	want, _ := engine.RecommendedTiers("opencode", true)
+	if e.Tiers != want || e.Model != want.Medium {
+		t.Fatalf("engine = %+v, want the free picks for each size", e)
+	}
+}
+
+func TestPickingASingleModelClearsTheModelsPerSize(t *testing.T) {
+	cfg := configured()
+	cfg.Engines[0].Tiers, _ = engine.RecommendedTiers("opencode", true)
+	d := startMenu(t, cfg)
+	d.pick("Models")
+	d.pick("1.")
+	d.pick("Change model")
+	d.pick("Big Pickle")
+	d.pick("Done")
+
+	if e := d.w.cfg.Engines[0]; e.Model != "opencode/big-pickle" || e.Tiers != (engine.TierModels{}) {
+		t.Fatalf("engine = %+v", e)
+	}
+}
