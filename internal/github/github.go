@@ -61,6 +61,12 @@ func gh(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// RateLimited reports whether err is GitHub refusing a call because the account's API budget
+// for the hour is spent. Every further call then fails too, so callers stop until it resets.
+func RateLimited(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "rate limit")
+}
+
 // Login returns the authenticated GitHub user.
 func Login(ctx context.Context) (string, error) {
 	out, err := gh(ctx, nil, "api", "user", "--jq", ".login")
@@ -217,20 +223,27 @@ func parseThreads(out []byte) ([]learn.Thread, error) {
 	return threads, nil
 }
 
-// RecentPRs lists the numbers of the most recently updated pull requests,
-// open or closed, newest first.
-func RecentPRs(ctx context.Context, repo string, limit int) ([]int, error) {
+// RecentPRs lists the numbers of the most recently updated pull requests, open or closed,
+// newest first, keeping only the ones updated at or after since.
+func RecentPRs(ctx context.Context, repo string, since time.Time, limit int) ([]int, error) {
 	out, err := gh(ctx, nil, "api",
 		fmt.Sprintf("repos/%s/pulls?state=all&sort=updated&direction=desc&per_page=%d", repo, limit),
-		"--jq", ".[].number")
+		"--jq", `.[] | {number, updated_at}`)
 	if err != nil {
 		return nil, err
 	}
 	var nums []int
-	for _, f := range strings.Fields(string(out)) {
-		var n int
-		if _, err := fmt.Sscan(f, &n); err == nil {
-			nums = append(nums, n)
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var p struct {
+			Number    int       `json:"number"`
+			UpdatedAt time.Time `json:"updated_at"`
+		}
+		if err := dec.Decode(&p); err != nil {
+			return nil, err
+		}
+		if !p.UpdatedAt.Before(since) {
+			nums = append(nums, p.Number)
 		}
 	}
 	return nums, nil
@@ -280,20 +293,29 @@ func JobLog(ctx context.Context, repo string, jobID int64) (string, error) {
 	return string(out), err
 }
 
+// Repo is a repository the user can access and when something was last pushed to it.
+type Repo struct {
+	Name   string    `json:"full_name"`
+	Pushed time.Time `json:"pushed_at"`
+}
+
 // Repos lists the non-archived repositories the user can access, most
 // recently pushed first.
-func Repos(ctx context.Context) ([]string, error) {
+func Repos(ctx context.Context) ([]Repo, error) {
 	out, err := gh(ctx, nil, "api", "--paginate",
 		"user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member",
-		"--jq", `.[] | select(.archived | not) | .full_name`)
+		"--jq", `.[] | select(.archived | not) | {full_name, pushed_at}`)
 	if err != nil {
 		return nil, err
 	}
-	var repos []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
-			repos = append(repos, line)
+	var repos []Repo
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var r Repo
+		if err := dec.Decode(&r); err != nil {
+			return nil, err
 		}
+		repos = append(repos, r)
 	}
 	return repos, nil
 }
@@ -304,12 +326,12 @@ type CLI struct{}
 func (CLI) Login(ctx context.Context) (string, error)                    { return Login(ctx) }
 func (CLI) GetPR(ctx context.Context, repo string, n int) (PR, error)    { return GetPR(ctx, repo, n) }
 func (CLI) Diff(ctx context.Context, repo string, n int) (string, error) { return Diff(ctx, repo, n) }
-func (CLI) Repos(ctx context.Context) ([]string, error)                  { return Repos(ctx) }
+func (CLI) Repos(ctx context.Context) ([]Repo, error)                    { return Repos(ctx) }
 func (CLI) Threads(ctx context.Context, repo string, n int) ([]learn.Thread, error) {
 	return Threads(ctx, repo, n)
 }
-func (CLI) RecentPRs(ctx context.Context, repo string, limit int) ([]int, error) {
-	return RecentPRs(ctx, repo, limit)
+func (CLI) RecentPRs(ctx context.Context, repo string, since time.Time, limit int) ([]int, error) {
+	return RecentPRs(ctx, repo, since, limit)
 }
 func (CLI) Issue(ctx context.Context, repo string, n int) (string, string, error) {
 	return Issue(ctx, repo, n)
