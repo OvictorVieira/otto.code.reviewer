@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,5 +127,24 @@ func TestOpencodeFreeTierLimitIsAQuotaFailure(t *testing.T) {
 	got := classify(&EngineError{Name: "opencode", Err: errors.New(msg)})
 	if got.Kind != FailQuota {
 		t.Fatalf("kind = %s, want quota", got.Kind)
+	}
+}
+
+func TestPoolLogsWhichModelRanAndWhyItStopped(t *testing.T) {
+	var lines []string
+	p := Pool{Strategy: Priority, AttemptTimeout: 60 * time.Millisecond,
+		Labels:  []string{"opencode · CLI default model", "claude · sonnet · high"},
+		Log:     func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) },
+		Engines: []Engine{hang{"opencode"}, answers{"claude"}}}
+
+	if _, err := p.Run(context.Background(), Request{}, 0, accept); err != nil {
+		t.Fatal(err)
+	}
+
+	log := strings.Join(lines, "\n")
+	for _, want := range []string{"trying opencode · CLI default model (up to", "opencode · CLI default model failed after", "timed out after", "trying claude · sonnet · high", "claude · sonnet · high answered in"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log is missing %q:\n%s", want, log)
+		}
 	}
 }
