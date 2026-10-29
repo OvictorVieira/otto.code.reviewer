@@ -178,3 +178,30 @@ func TestSilentOpencodeProcessIsKilledAtReviewDeadline(t *testing.T) {
 		t.Fatalf("silent process was not stopped by deadline: %v", err)
 	}
 }
+
+const ocQuota = `timestamp=2026-10-29T13:12:44.649Z level=ERROR run=54b580aa message="stream error" providerID=opencode modelID=big-pickle session.id=ses_x small=false agent=plan mode=primary error.error="AI_APICallError: Free usage limit reached. Free models are limited."`
+const ocTitleError = `timestamp=2026-10-29T13:15:59.152Z level=ERROR run=c131211d message="stream error" providerID=openrouter modelID=google/gemini-nano-banana-2.1 session.id=ses_x small=true agent=title mode=primary error.error="AI_APICallError: Rate limit exceeded: free-models-per-day"`
+const ocStep = `timestamp=2026-10-29T13:22:13.812Z level=INFO run=b90c02a0 message="touching file" file=/tmp/a.go`
+
+func TestOpencodeQuotaInItsLogStopsAtOnceButTheTitleHelperIsIgnored(t *testing.T) {
+	fakeCLI(t, "opencode", `echo '`+ocQuota+`' >&2; sleep 30`)
+	if _, err := runStuck(t, "opencode"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want a quota failure from the primary agent's log", err)
+	}
+
+	fakeCLI(t, "opencode", `echo '`+ocTitleError+`' >&2; echo '`+ocStep+`' >&2; printf 'review done'`)
+	out, err := CLI{Spec: Spec{Name: "opencode"}}.Run(context.Background(), Request{Prompt: "review", Dir: t.TempDir(), OutFile: filepath.Join(t.TempDir(), "out")})
+	if err != nil || out != "review done" {
+		t.Fatalf("a failed session title must not stop the review: out=%q err=%v", out, err)
+	}
+}
+
+func TestOpencodeLogLinesReportActivity(t *testing.T) {
+	fakeCLI(t, "opencode", `echo '`+ocStep+`' >&2; echo 'timestamp=2026-10-29T13:22:14Z level=INFO run=b message=loop session.id=s step=2' >&2; echo 'timestamp=2026-10-29T13:22:14Z level=INFO run=b message="event connected"' >&2; printf 'ok'`)
+	beats := 0
+	_, err := CLI{Spec: Spec{Name: "opencode"}}.Run(context.Background(), Request{Prompt: "review", Dir: t.TempDir(),
+		OutFile: filepath.Join(t.TempDir(), "out"), Alive: func() { beats++ }})
+	if err != nil || beats != 2 {
+		t.Fatalf("beats = %d err = %v, want one per model step or file read", beats, err)
+	}
+}

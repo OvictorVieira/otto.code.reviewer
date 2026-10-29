@@ -104,7 +104,13 @@ type Request struct {
 	// Contract is the JSON shape the answer must have. It lets Otto ask an engine to reformat a
 	// rejected answer without resending the whole review request.
 	Contract string
+	// Alive, when set, is called each time the engine shows it is still working (a model step,
+	// a file read). The pool uses it to tell a slow engine from a stuck one.
+	Alive func()
 }
+
+// Reporter is an engine that reports activity through Request.Alive while it works.
+type Reporter interface{ ReportsActivity() bool }
 
 // Engine runs a prompt and returns the final answer text.
 type Engine interface {
@@ -181,7 +187,9 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		// reaches the model, while the same text on stdin is answered in seconds.
 		c.Stdin = req.Prompt
 		c.Env = []string{"OPENCODE_CONFIG_CONTENT=" + opencodeLockdown()}
-		c.Args = []string{"run", "--agent", "plan"}
+		// Its own log on stderr shows each model step and file read (activity) and the primary
+		// agent's provider errors (a spent free quota), which it otherwise retries in silence.
+		c.Args = []string{"run", "--agent", "plan", "--print-logs", "--log-level", "INFO"}
 		c.Args = append(c.Args, "--dir", req.Dir)
 		if s.Model != "" {
 			c.Args = append(c.Args, "-m", s.Model)
@@ -254,6 +262,9 @@ func (e CLI) Name() string { return e.Spec.Name }
 // CanContinue is false until OpenCode follow-ups can pin the session created by this review.
 // Continuing the latest session in a shared checkout can resume another parallel review.
 func (e CLI) CanContinue() bool { return false }
+
+// ReportsActivity: opencode's log shows each step, so a slow free model is told from a stuck one.
+func (e CLI) ReportsActivity() bool { return e.Spec.Name == "opencode" }
 
 // Run implements Engine.
 func (e CLI) Run(ctx context.Context, req Request) (string, error) {
@@ -341,6 +352,21 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 		for {
 			line, readErr := reader.ReadString('\n')
 			if line != "" {
+				if isStderr && c.Bin == "opencode" && isOpencodeLog(line) {
+					// Log lines are not error output: the title helper's failures there are harmless.
+					switch reason, quota := opencodeLog(line); {
+					case quota:
+						cancelForQuota(reason)
+					case reason != "":
+						stopEarly(reason)
+					case req.Alive != nil && opencodeProgress(line):
+						req.Alive()
+					}
+					if readErr != nil {
+						return
+					}
+					continue
+				}
 				dst.WriteString(line)
 				if isStderr {
 					if stderrTracker.inError(line) && isQuotaMessage(line) {
@@ -473,6 +499,46 @@ func stuckSignal(bin, line string, retryNotices *int) string {
 		}
 	}
 	return ""
+}
+
+var opencodeLogLine = regexp.MustCompile(`^timestamp=\S+ level=(\w+) `)
+
+func isOpencodeLog(line string) bool { return opencodeLogLine.MatchString(line) }
+
+// opencodeLog reads one line of opencode's own log. An error of the primary agent's model
+// (not the small helper that writes session titles) stops the engine: a spent quota is a quota
+// failure, and a provider that gave up after its retries will not answer.
+func opencodeLog(line string) (reason string, quota bool) {
+	m := opencodeLogLine.FindStringSubmatch(line)
+	if m == nil || m[1] != "ERROR" || !strings.Contains(line, `message="stream error"`) || !strings.Contains(line, "small=false") {
+		return "", false
+	}
+	detail := line
+	if i := strings.Index(line, "error.error="); i >= 0 {
+		detail = line[i+len("error.error="):]
+	}
+	detail = strings.Trim(strings.TrimSpace(detail), `"`)
+	if isQuotaMessage(detail) {
+		return detail, true
+	}
+	if strings.Contains(detail, "AI_RetryError") {
+		return "the model provider failed after retries: " + tail(detail, 200), false
+	}
+	return "", false
+}
+
+// opencodeProgress reports whether a log line shows the model working: a new step of the agent
+// loop, a model call or a file the agent reads.
+func opencodeProgress(line string) bool {
+	if !strings.Contains(line, " level=INFO ") {
+		return false
+	}
+	for _, s := range []string{"message=loop ", "message=stream ", "message=process ", `message="touching file"`, "message=evaluated "} {
+		if strings.Contains(line, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Installed reports whether the engine's CLI is on PATH.

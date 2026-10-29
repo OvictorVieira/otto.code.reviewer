@@ -22,6 +22,7 @@ type reviewQueue struct {
 	queued  map[int64]bool // requests waiting in items or being reviewed
 	running int
 	stopped bool
+	paused  bool // no new review starts: the watcher is about to restart
 	workers sync.WaitGroup
 	idle    sync.WaitGroup
 }
@@ -89,7 +90,7 @@ func (q *reviewQueue) worker() {
 	defer q.workers.Done()
 	for {
 		q.mu.Lock()
-		for len(q.items) == 0 && !q.stopped && q.ctx.Err() == nil {
+		for (len(q.items) == 0 || q.paused) && !q.stopped && q.ctx.Err() == nil {
 			q.ready.Wait()
 		}
 		if q.stopped || q.ctx.Err() != nil {
@@ -133,6 +134,23 @@ func (q *reviewQueue) retryDue(now time.Time) {
 		q.idle.Add(1)
 		q.ready.Signal()
 	}
+}
+
+// drain stops starting reviews and reports whether none is running, so the watcher can restart
+// without cutting one short. Requests still waiting stay saved and run after the restart.
+func (q *reviewQueue) drain() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.paused = true
+	return q.running == 0
+}
+
+// resume lets reviews start again after a restart that did not happen.
+func (q *reviewQueue) resume() {
+	q.mu.Lock()
+	q.paused = false
+	q.ready.Broadcast()
+	q.mu.Unlock()
 }
 
 func (q *reviewQueue) wait() {
