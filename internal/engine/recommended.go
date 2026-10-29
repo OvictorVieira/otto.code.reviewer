@@ -32,6 +32,8 @@ var tierDescription = map[Tier]string{
 //     answer was valid JSON, found all three bugs and took under three minutes: north-mini-code (33s),
 //     big-pickle (40s, 4 findings) and inkling (51s, 5 findings, the most thorough). deepseek-v4.1-flash-free,
 //     glm-5.3, mimo-v2.6, flint-40b and the nemotron-3.5 Zen models did not answer within four minutes.
+//     Free tiers are rationed by the provider (OpenRouter: ~50 requests a day without credits), so they are
+//     good picks while available but must never be a configuration's only engine.
 var recommended = []struct {
 	engine string
 	tier   Tier

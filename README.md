@@ -113,6 +113,11 @@ everyday ones, heavy for large or risky changes such as auth, payments or concur
 OpenAI, DeepSeek, Google...) in alphabetical order, free models first and then from the cheapest to the dearest. Prices are
 shown only when the engine's own catalog gives one. The paid recommendations are maintainer choices; the OpenCode
 free recommendations passed `otto eval models` on the planted-bug fixture. The picks and their evidence live in
+
+Free models have daily limits set by their provider: OpenRouter's `:free` models allow about 50 requests a day
+(1000 with $10 of credits) and report `Rate limit exceeded: free-models-per-day` afterwards; OpenCode Zen's free models
+can stall when their free tier is busy. Otto then moves on to the next engine in your list, so keep a fallback that
+does not depend on a free tier. Running `otto eval models` many times can use up the day's free requests.
 `internal/engine/recommended.go`.
 
 **Fallback models.** Under **Models and fallback** the models are a list in the order they are tried. Add another model
