@@ -34,6 +34,9 @@ Usage:
       --dry-run                       print the review instead of posting it
       --focus "text"                  extra instructions for the reviewer
   otto watch [--once]                 poll repositories and answer the trigger comment
+  otto learn [owner/repo ...]         read maintainer feedback now and update what Otto learned
+  otto lessons <owner/repo> [pin|unpin|disable|enable|forget <id>]
+                                      show or edit what Otto learned about a repository
   otto service install|uninstall|status
   otto update                         check GitHub and install the latest release
   otto clean                          delete cached clones and worktrees
@@ -80,6 +83,10 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		return a.Watch(ctx, *once)
+	case "learn":
+		return learnCmd(ctx, args[1:])
+	case "lessons":
+		return lessonsCmd(args[1:])
 	case "service":
 		return serviceCmd(args[1:])
 	case "update":
@@ -262,4 +269,70 @@ func maybeUpdate(ctx context.Context, args []string) {
 		fmt.Fprintln(os.Stderr, "otto: restart failed, run the command again:", err)
 		os.Exit(0)
 	}
+}
+
+func learnCmd(ctx context.Context, repos []string) error {
+	a, err := app.New(os.Stdout)
+	if err != nil {
+		return err
+	}
+	if len(repos) == 0 {
+		repos = a.Cfg.Repos.Selected
+	}
+	if len(repos) == 0 {
+		return fmt.Errorf("name a repository: otto learn owner/repo")
+	}
+	for _, repo := range repos {
+		sum, err := a.LearnRepo(ctx, repo, true)
+		if err != nil {
+			return fmt.Errorf("%s: %w", repo, err)
+		}
+		switch {
+		case sum.Distill:
+			fmt.Printf("%s: learned from %d signal(s); %d lesson(s)\n", repo, sum.Signals, sum.Lessons)
+		default:
+			fmt.Printf("%s: nothing new to learn; %d lesson(s)\n", repo, sum.Lessons)
+		}
+	}
+	return nil
+}
+
+func lessonsCmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: otto lessons <owner/repo> [pin|unpin|disable|enable|forget <id>]")
+	}
+	a, err := app.New(os.Stdout)
+	if err != nil {
+		return err
+	}
+	repo := args[0]
+	if len(args) >= 3 {
+		return a.EditLesson(repo, args[2], args[1])
+	}
+	lessons, err := a.Lessons(repo)
+	if err != nil {
+		return err
+	}
+	if len(lessons) == 0 {
+		fmt.Printf("%s: nothing learned yet. Otto learns from reactions and replies on its findings.\n", repo)
+		return nil
+	}
+	for _, l := range lessons {
+		flags := ""
+		if l.Pinned {
+			flags += " pinned"
+		}
+		if l.Disabled {
+			flags += " disabled"
+		}
+		scope := ""
+		if l.Scope != "" {
+			scope = " " + l.Scope
+		}
+		fmt.Printf("%s  [%s]%s%s  (%d finding(s))\n    %s\n", l.ID, l.Kind, scope, flags, l.Evidence, l.Rule)
+		if l.Why != "" {
+			fmt.Printf("    why: %s\n", l.Why)
+		}
+	}
+	return nil
 }

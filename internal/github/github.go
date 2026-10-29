@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
 )
 
@@ -135,6 +136,98 @@ func CommentsSince(ctx context.Context, repo string, since time.Time) ([]trigger
 	return comments, nil
 }
 
+const threadsQuery = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){
+reviewThreads(first:100){nodes{isResolved path line comments(first:30){nodes{databaseId body author{login}
+reactionGroups{content reactors{totalCount}}}}}}}}}`
+
+// Threads lists the review threads of a pull request with their reactions and
+// replies. It is what Otto learns from.
+func Threads(ctx context.Context, repo string, number int) ([]learn.Thread, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok {
+		return nil, fmt.Errorf("not a repository: %q", repo)
+	}
+	out, err := gh(ctx, nil, "api", "graphql", "-f", "query="+threadsQuery,
+		"-F", "owner="+owner, "-F", "name="+name, "-F", fmt.Sprintf("number=%d", number))
+	if err != nil {
+		return nil, err
+	}
+	return parseThreads(out)
+}
+
+func parseThreads(out []byte) ([]learn.Thread, error) {
+	var resp struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []struct {
+							IsResolved bool   `json:"isResolved"`
+							Path       string `json:"path"`
+							Line       int    `json:"line"`
+							Comments   struct {
+								Nodes []struct {
+									DatabaseID int64  `json:"databaseId"`
+									Body       string `json:"body"`
+									Author     struct {
+										Login string `json:"login"`
+									} `json:"author"`
+									ReactionGroups []struct {
+										Content  string `json:"content"`
+										Reactors struct {
+											TotalCount int `json:"totalCount"`
+										} `json:"reactors"`
+									} `json:"reactionGroups"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, err
+	}
+	var threads []learn.Thread
+	for _, n := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		t := learn.Thread{Path: n.Path, Line: n.Line, Resolved: n.IsResolved}
+		for _, c := range n.Comments.Nodes {
+			tc := learn.ThreadComment{ID: c.DatabaseID, Author: c.Author.Login, Body: c.Body}
+			for _, g := range c.ReactionGroups {
+				switch g.Content {
+				case "THUMBS_UP":
+					tc.Up = g.Reactors.TotalCount
+				case "THUMBS_DOWN":
+					tc.Down = g.Reactors.TotalCount
+				}
+			}
+			t.Comments = append(t.Comments, tc)
+		}
+		threads = append(threads, t)
+	}
+	return threads, nil
+}
+
+// RecentPRs lists the numbers of the most recently updated pull requests,
+// open or closed, newest first.
+func RecentPRs(ctx context.Context, repo string, limit int) ([]int, error) {
+	out, err := gh(ctx, nil, "api",
+		fmt.Sprintf("repos/%s/pulls?state=all&sort=updated&direction=desc&per_page=%d", repo, limit),
+		"--jq", ".[].number")
+	if err != nil {
+		return nil, err
+	}
+	var nums []int
+	for _, f := range strings.Fields(string(out)) {
+		var n int
+		if _, err := fmt.Sscan(f, &n); err == nil {
+			nums = append(nums, n)
+		}
+	}
+	return nums, nil
+}
+
 // Repos lists the non-archived repositories the user can access, most
 // recently pushed first.
 func Repos(ctx context.Context) ([]string, error) {
@@ -160,6 +253,12 @@ func (CLI) Login(ctx context.Context) (string, error)                    { retur
 func (CLI) GetPR(ctx context.Context, repo string, n int) (PR, error)    { return GetPR(ctx, repo, n) }
 func (CLI) Diff(ctx context.Context, repo string, n int) (string, error) { return Diff(ctx, repo, n) }
 func (CLI) Repos(ctx context.Context) ([]string, error)                  { return Repos(ctx) }
+func (CLI) Threads(ctx context.Context, repo string, n int) ([]learn.Thread, error) {
+	return Threads(ctx, repo, n)
+}
+func (CLI) RecentPRs(ctx context.Context, repo string, limit int) ([]int, error) {
+	return RecentPRs(ctx, repo, limit)
+}
 func (CLI) Comment(ctx context.Context, repo string, n int, body string) error {
 	return Comment(ctx, repo, n, body)
 }

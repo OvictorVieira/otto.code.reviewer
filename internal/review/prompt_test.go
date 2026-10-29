@@ -3,6 +3,8 @@ package review
 import (
 	"strings"
 	"testing"
+
+	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 )
 
 func TestPromptIncludesSpecDiffAndVerificationSteps(t *testing.T) {
@@ -43,5 +45,33 @@ func TestPromptTruncatesLargeDiffs(t *testing.T) {
 	}
 	if !strings.Contains(p, "was truncated") || len(p) > 20000 {
 		t.Errorf("diff not truncated (len %d)", len(p))
+	}
+}
+
+func TestPromptCarriesLessonsAndPriorFindings(t *testing.T) {
+	out, err := BuildPrompt(PromptInput{
+		Repo: "o/r", Language: "English",
+		Lessons: []learn.Lesson{{Kind: "avoid", Rule: "Do not flag test helpers in lib.", Why: "only used by tests"}},
+		Prior: []learn.Record{{Outcome: learn.Rejected, Priority: 3, Title: "Move helper", Path: "a.dart",
+			Notes: []string{"Won't fix. tree-shaken"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"What you have learned", "[avoid] Do not flag test helpers in lib.", "Why: only used by tests",
+		"Findings you already made", "[rejected] P3 Move helper (a.dart)", "Reply: Won't fix. tree-shaken"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestPromptOmitsLearningSectionsWhenThereIsNothingToSay(t *testing.T) {
+	out, err := BuildPrompt(PromptInput{Repo: "o/r", Language: "English"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "What you have learned") || strings.Contains(out, "already made") {
+		t.Fatal("empty learning sections must not appear")
 	}
 }

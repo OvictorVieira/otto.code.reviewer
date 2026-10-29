@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"strings"
 	"text/template"
+
+	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 )
 
 //go:embed prompt.md
@@ -25,6 +27,11 @@ type PromptInput struct {
 	MaxDiffBytes                          int
 
 	DiffTruncated bool
+
+	// Lessons are what Otto learned from maintainer feedback on earlier reviews of this
+	// repository. Prior are the findings already made on this pull request and their outcome.
+	Lessons []learn.Lesson
+	Prior   []learn.Record
 }
 
 // BuildPrompt renders the review harness for one pull request.
