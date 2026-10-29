@@ -333,6 +333,7 @@ func (p pool) spec(i int) engine.Spec { return p.specs[i] }
 func (a *App) pool(only string, opt Options) (pool, error) {
 	var p pool
 	p.Strategy = a.Cfg.Strategy
+	p.AttemptTimeout = a.Cfg.EngineTimeout
 	for _, s := range a.Cfg.Engines {
 		if only != "" && s.Name != only {
 			continue

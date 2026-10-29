@@ -40,6 +40,9 @@ type Config struct {
 	PollInterval   time.Duration   `yaml:"poll_interval"`
 	Lookback       time.Duration   `yaml:"lookback"`
 	Timeout        time.Duration   `yaml:"timeout"`
+	// EngineTimeout caps one engine's attempt so a hung engine falls back to the next. Zero
+	// splits the remaining review time between the engines still waiting.
+	EngineTimeout time.Duration `yaml:"engine_timeout"`
 	// Learning makes Otto read how maintainers react to its findings (reactions, replies,
 	// resolved threads) and apply what it learns in later reviews.
 	Learning bool `yaml:"learning"`

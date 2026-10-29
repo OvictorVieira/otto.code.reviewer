@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Strategy decides which engine goes first.
@@ -21,6 +23,45 @@ const (
 type Pool struct {
 	Strategy Strategy
 	Engines  []Engine
+
+	// AttemptTimeout caps one engine's attempt. Zero means each attempt only gets its fair
+	// share of the time left (see attemptContext), so a hung engine can never use up the
+	// whole review and leave the others no turn.
+	AttemptTimeout time.Duration
+	// MinAttempt is the smallest slice a non-final engine is given. Zero means DefaultMinAttempt.
+	MinAttempt time.Duration
+}
+
+// DefaultMinAttempt is the shortest turn a non-final engine gets, so a slow but healthy
+// engine is not cut off before it can answer a normal review.
+const DefaultMinAttempt = 5 * time.Minute
+
+// attemptContext bounds one engine's turn. The time left on the review is split between the
+// engines still waiting (this one included), never below MinAttempt; the last engine gets
+// everything that is left. An engine that hangs therefore fails over to the next one instead of
+// holding the review until the overall timeout, when nobody would be left to answer.
+func (p Pool) attemptContext(ctx context.Context, enginesLeft int) (context.Context, context.CancelFunc, time.Duration) {
+	var limit time.Duration
+	if deadline, ok := ctx.Deadline(); ok && enginesLeft > 1 {
+		min := p.MinAttempt
+		if min <= 0 {
+			min = DefaultMinAttempt
+		}
+		remaining := time.Until(deadline)
+		limit = max(remaining/time.Duration(enginesLeft), min)
+		if limit >= remaining {
+			limit = 0 // not enough time to split; let it use what is left
+		}
+	}
+	if p.AttemptTimeout > 0 && (limit == 0 || p.AttemptTimeout < limit) {
+		limit = p.AttemptTimeout
+	}
+	if limit <= 0 {
+		c, cancel := context.WithCancel(ctx)
+		return c, cancel, 0
+	}
+	c, cancel := context.WithTimeout(ctx, limit)
+	return c, cancel, limit
 }
 
 // Outcome reports which engine answered and where the next review starts.
@@ -88,12 +129,19 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 		if req.Progress != nil {
 			req.Progress(fmt.Sprintf("Analisando com %s…", e.Name()))
 		}
-		text, err := e.Run(ctx, req)
+		attempt, cancel, limit := p.attemptContext(ctx, n-i)
+		text, err := e.Run(attempt, req)
 		if err == nil {
 			if err = accept(text); err != nil {
-				text, err = askForTheAnswer(ctx, e, req, err, accept)
+				text, err = askForTheAnswer(attempt, e, req, err, accept)
 			}
 		}
+		// This engine ran out of its turn while the review as a whole still has time: say so,
+		// and go on to the next engine.
+		if err != nil && ctx.Err() == nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("timed out after %s without an answer: %w", limit.Round(time.Second), context.DeadlineExceeded)
+		}
+		cancel()
 		if err != nil {
 			failure := &EngineError{Name: e.Name(), Err: err}
 			out.Failures = append(out.Failures, failure.Error())
