@@ -409,9 +409,35 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	var reposAt time.Time
 	polled := map[string]time.Time{}
 	var pollPausedUntil time.Time
+	// restart says why the watcher must restart (an update or a changed config), and waiting
+	// that it is letting the reviews in progress finish first.
+	var restart string
+	var waiting bool
 	for {
-		if a.selfUpdate(ctx) || a.restartForChanges(startedAs, configStartedAs) {
-			return nil
+		if restart == "" && a.Restart != nil {
+			if a.selfUpdate(ctx) {
+				restart = "updated to a newer version, restarting"
+			} else {
+				restart = a.changedOnDisk(startedAs, configStartedAs)
+			}
+		}
+		if restart != "" {
+			if queue.drain() {
+				a.logf("%s", restart)
+				if err := a.Restart(); err != nil {
+					a.logf("restart failed, still running the old version: %v", err)
+					restart, waiting = "", false
+					queue.resume()
+				} else {
+					return nil
+				}
+			} else if once {
+				restart = "" // a single pass just finishes; the next run starts on the new version
+				queue.resume()
+			} else if !waiting {
+				waiting = true
+				a.logf("a new version or config is ready; restarting once the reviews in progress finish (no new review starts until then)")
+			}
 		}
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
 			if r, e := a.Host.Repos(ctx); e == nil {
@@ -501,33 +527,25 @@ func (a *App) engineSummary() string {
 	return strings.Join(parts, ", ")
 }
 
-// restartForChanges restarts into the binary and config on disk when an update replaced the
-// binary or `otto setup` rewrote the config since this process started. It runs between cycles,
-// so a review in progress always finishes first, and the process is replaced in place, so no old
+// changedOnDisk says why the watcher must restart when an update replaced the binary or
+// `otto setup` rewrote the config since this process started, or returns "". The restart itself
+// waits for the reviews in progress (see Watch), and the process is replaced in place, so no old
 // copy keeps running next to the new one. A binary or config that is unreadable for a moment
 // while being rewritten is ignored until it is readable again.
-func (a *App) restartForChanges(binaryAtStart, configAtStart string) bool {
+func (a *App) changedOnDisk(binaryAtStart, configAtStart string) string {
 	changed := func(atStart, now string) bool { return atStart != "" && now != "" && now != atStart }
-	binaryChanged := changed(binaryAtStart, a.fingerprint())
-	configChanged := changed(configAtStart, a.configStamp())
-	if (!binaryChanged && !configChanged) || a.Restart == nil {
-		return false
+	switch {
+	case changed(configAtStart, a.configStamp()):
+		return "the Otto config was changed; reloading it"
+	case changed(binaryAtStart, a.fingerprint()):
+		return "the Otto binary was updated; restarting into the new version"
 	}
-	if configChanged {
-		a.logf("the Otto config was changed; reloading it")
-	} else {
-		a.logf("the Otto binary was updated; restarting into the new version")
-	}
-	if err := a.Restart(); err != nil {
-		a.logf("restart failed, still running the old version: %v", err)
-		return false
-	}
-	return true
+	return ""
 }
 
-// selfUpdate installs a newer release and restarts into it. Requests triggered
-// from GitHub run on the newest version: the pending comment is not marked
-// done, so the restarted process picks it up.
+// selfUpdate installs a newer release and reports whether it did; the watcher then restarts
+// into it once no review is running. Requests triggered from GitHub run on the newest version:
+// a request not started yet stays saved, so the restarted process picks it up.
 func (a *App) selfUpdate(ctx context.Context) bool {
 	if a.Upgrade == nil {
 		return false
@@ -537,18 +555,7 @@ func (a *App) selfUpdate(ctx context.Context) bool {
 		a.logf("update check failed: %v", err)
 		return false
 	}
-	if !updated {
-		return false
-	}
-	a.logf("updated to a newer version, restarting")
-	if a.Restart == nil {
-		return false
-	}
-	if err := a.Restart(); err != nil {
-		a.logf("restart failed: %v", err)
-		return false
-	}
-	return true
+	return updated
 }
 
 const (

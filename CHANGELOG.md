@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.4
+
+- A slow OpenCode model is no longer cut off while it works: Otto reads OpenCode's own log, lets it run while it keeps taking steps or reading files, and moves to the next engine only after 5 minutes without any activity. A spent free quota or a provider that gave up is detected at once instead of waiting.
+- An update or config change no longer restarts Otto in the middle of a review: no new review starts, the ones in progress finish and are posted, and then Otto restarts.
+
 ## v0.2.3
 
 - On GitHub's rate limit, Otto asks GitHub when the limit lifts (a call that does not count against it) and waits exactly until then: retried reviews, polling and learning resume right after the reset instead of trying again blindly.

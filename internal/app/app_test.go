@@ -1059,3 +1059,38 @@ func TestPollingWaitsForTheResetInsteadOfCallingAgain(t *testing.T) {
 		t.Fatalf("log:\n%s", h.out.String())
 	}
 }
+
+func TestAnUpdateDuringALongReviewWaitsForItInsteadOfRestartingTheReviewFromScratch(t *testing.T) {
+	var fingerprint atomic.Value
+	fingerprint.Store("v1")
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, onRun: func() {
+		fingerprint.Store("v2") // the update lands while the review is running...
+		time.Sleep(300 * time.Millisecond)
+		note("review finished") // ...and the review takes several more poll cycles
+	}})
+	h.app.Cfg.PollInterval = 5 * time.Millisecond
+	h.app.Fingerprint = func() string { return fingerprint.Load().(string) }
+	h.app.Restart = func() error { note("restart"); return nil }
+	h.host.comments = []trigger.Comment{triggerComment(51, "OvictorVieira")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.app.Watch(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(order, ",") != "review finished,restart" {
+		t.Fatalf("order = %v, want the running review to finish before the restart", order)
+	}
+	if !h.app.State.Done(51) || len(h.host.posted) != 1 {
+		t.Fatal("the review must be posted once, not cut short and redone")
+	}
+	if !strings.Contains(h.out.String(), "restarting once the reviews in progress finish") {
+		t.Fatalf("log:\n%s", h.out.String())
+	}
+}

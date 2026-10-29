@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeCommandIsReadOnlyAndMapsModelAndEffort(t *testing.T) {
@@ -332,5 +334,65 @@ func TestCursorResultIsExtractedFromJSON(t *testing.T) {
 	out, err := ExtractOutput("cursor-agent", `{"type":"result","is_error":false,"result":"{\"findings\":[]}"}`, "")
 	if err != nil || out != `{"findings":[]}` {
 		t.Errorf("out = %q, err = %v", out, err)
+	}
+}
+
+// worker answers after a while, reporting activity every tick until then (or never, when quiet).
+type worker struct {
+	name  string
+	after time.Duration
+	quiet bool
+}
+
+func (w worker) Name() string          { return w.name }
+func (w worker) ReportsActivity() bool { return true }
+func (w worker) Run(ctx context.Context, req Request) (string, error) {
+	done := time.After(w.after)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return `{"summary":"ok","findings":[]}`, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-tick.C:
+			if !w.quiet && req.Alive != nil {
+				req.Alive()
+			}
+		}
+	}
+}
+
+func TestASlowEngineThatKeepsWorkingIsNotCutOffByItsTimeSlice(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// A fair slice would be 1s; the engine needs 1.3s and keeps showing activity.
+	p := Pool{Strategy: Priority, MinAttempt: 100 * time.Millisecond, IdleLimit: 300 * time.Millisecond,
+		Engines: []Engine{worker{name: "opencode", after: 1300 * time.Millisecond}, fake{name: "claude", out: `{"summary":"x","findings":[]}`, runs: &[]string{}}}}
+
+	out, err := p.Run(ctx, Request{}, 0, func(string) error { return nil })
+
+	if err != nil || out.Engine != "opencode" {
+		t.Fatalf("engine = %q err = %v, want the working engine to finish", out.Engine, err)
+	}
+}
+
+func TestAnEngineWithoutActivityIsStoppedAndTheNextOneAnswers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var log []string
+	p := Pool{Strategy: Priority, MinAttempt: 100 * time.Millisecond, IdleLimit: 200 * time.Millisecond,
+		Log:     func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) },
+		Engines: []Engine{worker{name: "opencode", after: time.Hour, quiet: true}, fake{name: "claude", out: `{"summary":"x","findings":[]}`, runs: &[]string{}}}}
+	started := time.Now()
+
+	out, err := p.Run(ctx, Request{}, 0, func(string) error { return nil })
+
+	if err != nil || out.Engine != "claude" || time.Since(started) > 2*time.Second {
+		t.Fatalf("engine = %q err = %v after %s, want a quick fallback", out.Engine, err, time.Since(started))
+	}
+	if !strings.Contains(strings.Join(log, "\n"), "stalled: no activity for") {
+		t.Fatalf("log must say the engine stalled:\n%s", strings.Join(log, "\n"))
 	}
 }
