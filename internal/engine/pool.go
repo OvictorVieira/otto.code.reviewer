@@ -30,6 +30,25 @@ type Pool struct {
 	AttemptTimeout time.Duration
 	// MinAttempt is the smallest slice a non-final engine is given. Zero means DefaultMinAttempt.
 	MinAttempt time.Duration
+
+	// Labels name each engine for the log ("opencode · opencode/big-pickle · medium"), and Log
+	// receives one line when an attempt starts and one when it ends, so the log shows which
+	// model actually ran and why it stopped. Both are optional.
+	Labels []string
+	Log    func(format string, args ...any)
+}
+
+func (p Pool) label(i int) string {
+	if i < len(p.Labels) && p.Labels[i] != "" {
+		return p.Labels[i]
+	}
+	return p.Engines[i].Name()
+}
+
+func (p Pool) logf(format string, args ...any) {
+	if p.Log != nil {
+		p.Log(format, args...)
+	}
 }
 
 // DefaultMinAttempt is the shortest turn a non-final engine gets, so a slow but healthy
@@ -130,6 +149,12 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 			req.Progress(fmt.Sprintf("Analisando com %s…", e.Name()))
 		}
 		attempt, cancel, limit := p.attemptContext(ctx, n-i)
+		started := time.Now()
+		if limit > 0 {
+			p.logf("trying %s (up to %s)", p.label(idx), limit.Round(time.Second))
+		} else {
+			p.logf("trying %s", p.label(idx))
+		}
 		text, err := e.Run(attempt, req)
 		if err == nil {
 			if err = accept(text); err != nil {
@@ -142,6 +167,11 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 			err = fmt.Errorf("timed out after %s without an answer: %w", limit.Round(time.Second), context.DeadlineExceeded)
 		}
 		cancel()
+		if err != nil {
+			p.logf("%s failed after %s: %s", p.label(idx), time.Since(started).Round(time.Second), firstLine(err.Error()))
+		} else {
+			p.logf("%s answered in %s", p.label(idx), time.Since(started).Round(time.Second))
+		}
 		if err != nil {
 			failure := &EngineError{Name: e.Name(), Err: err}
 			out.Failures = append(out.Failures, failure.Error())
@@ -158,4 +188,16 @@ func (p Pool) Run(ctx context.Context, req Request, cursor int, accept func(stri
 		return out, nil
 	}
 	return out, allFailedError{failures: failures, messages: out.Failures}
+}
+
+// firstLine keeps log lines short: engine errors can carry a long tail of output.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }

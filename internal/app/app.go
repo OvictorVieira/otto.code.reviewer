@@ -334,6 +334,7 @@ func (a *App) pool(only string, opt Options) (pool, error) {
 	var p pool
 	p.Strategy = a.Cfg.Strategy
 	p.AttemptTimeout = a.Cfg.EngineTimeout
+	p.Log = a.logf
 	for _, s := range a.Cfg.Engines {
 		if only != "" && s.Name != only {
 			continue
@@ -345,13 +346,14 @@ func (a *App) pool(only string, opt Options) (pool, error) {
 		}
 		p.Engines = append(p.Engines, a.NewEngine(s))
 		p.specs = append(p.specs, s)
+		p.Labels = append(p.Labels, specLabel(s))
 	}
 	if only != "" && len(p.Engines) == 0 {
 		if !a.Installed(only) {
 			return p, fmt.Errorf("engine %q is not installed", only)
 		}
 		s := engine.Spec{Name: only}
-		p.Engines, p.specs = []engine.Engine{a.NewEngine(s)}, []engine.Spec{s}
+		p.Engines, p.specs, p.Labels = []engine.Engine{a.NewEngine(s)}, []engine.Spec{s}, []string{specLabel(s)}
 	}
 	if len(p.Engines) == 0 {
 		return p, errors.New("no installed engine is configured: run `otto setup`")
@@ -572,4 +574,18 @@ func short(sha string) string {
 		return sha[:10]
 	}
 	return sha
+}
+
+// specLabel says which model an engine runs: an engine with no model set runs whatever its own CLI
+// is configured to use, which can change outside Otto (for opencode it is the last model used).
+func specLabel(s engine.Spec) string {
+	model := s.Model
+	if model == "" {
+		model = "CLI default model"
+	}
+	label := s.Name + " · " + model
+	if s.Effort != "" {
+		label += " · " + s.Effort
+	}
+	return label
 }

@@ -279,3 +279,43 @@ func TestAModelListWithNothingRecommendedDoesNotTalkAboutRecommendations(t *test
 		t.Errorf("no recommendations, so no note about them:\n%s", s)
 	}
 }
+
+func TestPickingAFreeModelSavesExactlyThatIdNotAPaidLookAlike(t *testing.T) {
+	// Real opencode lists "DeepSeek V4.1 Flash Free" (opencode, free) next to
+	// "DeepSeek V4 Flash Latest" (openrouter, paid). The saved id must be the one picked.
+	original, had := catalogs["opencode"]
+	catalogs["opencode"] = []engine.Model{
+		{ID: "opencode/deepseek-v4.1-flash-free", Name: "DeepSeek V4.1 Flash Free", Group: "Free", Tag: "Free", Free: true, Efforts: []string{"low", "high", "max"}},
+		{ID: "openrouter/~deepseek/deepseek-v4-flash-latest", Name: "DeepSeek V4 Flash Latest", Group: "openrouter", Tag: "$0.04 / $0.17"},
+	}
+	t.Cleanup(func() {
+		if had {
+			catalogs["opencode"] = original
+		} else {
+			delete(catalogs, "opencode")
+		}
+	})
+	cfg := configured()
+	cfg.Engines = []engine.Spec{{Name: "opencode", Effort: "medium"}} // saved on the CLI default, as in a real config
+
+	d := startMenu(t, cfg)
+	d.pick("Models")
+	d.pick("1.")
+	d.pick("Change model")
+	d.shows("opencode · select model")
+	d.pick("deepseek v4.1 flash free")
+	d.shows("select effort for opencode/deepseek-v4.1-flash-free", "high")
+	d.pick("high")
+	d.pick("Done")
+	d.pick("Save")
+
+	if got := engineNames(d); got != "opencode=opencode/deepseek-v4.1-flash-free" {
+		t.Fatalf("engines = %s, want the picked free model", got)
+	}
+	if d.w.cfg.Engines[0].Effort != "high" {
+		t.Fatalf("effort = %q, want one of the model's own levels", d.w.cfg.Engines[0].Effort)
+	}
+	if !d.w.finished {
+		t.Fatal("save and exit must finish the setup")
+	}
+}

@@ -203,3 +203,18 @@ func TestPromptGrowthIsBoundedNoMatterHowMuchWasLearned(t *testing.T) {
 		t.Fatalf("prompt grew by %d chars, budget is %d", grew, learn.LessonBudget)
 	}
 }
+
+func TestReviewLogsTheModelEachEngineRunsWithAndFlagsTheCLIDefault(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.Engines = []engine.Spec{{Name: "claude", Model: "sonnet", Effort: "high"}}
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.out.String(), "trying claude · sonnet · high") {
+		t.Fatalf("the log must say which model ran:\n%s", h.out.String())
+	}
+
+	if got := specLabel(engine.Spec{Name: "opencode", Effort: "medium"}); got != "opencode · CLI default model · medium" {
+		t.Fatalf("an engine with no model must be labelled as the CLI default, got %q", got)
+	}
+}
