@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -25,6 +24,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/slice"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/update"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/workspace"
@@ -213,68 +213,65 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 
 	lessons, prior := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
 	ciEvidence := a.ciEvidence(ctx, repo, number, pr.HeadRefOid, opt)
-	prompt, err := review.BuildPrompt(review.PromptInput{
+	in := review.PromptInput{
 		Repo: repo, URL: pr.URL, Title: pr.Title, Body: pr.Body, Base: pr.BaseRefName, HeadSHA: pr.HeadRefOid,
 		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions,
 		Lessons: lessons, Prior: prior, CI: ciEvidence,
-	})
-	if err != nil {
-		return Report{}, err
 	}
 	a.reviewStatus(opt, fmt.Sprintf("%s#%d: preparing review instructions for %d changed files", repo, number, len(d.Files())),
 		fmt.Sprintf("Preparando análise de %d arquivos…", len(d.Files())))
 
-	pool, err := a.pool(opt.Engine, opt, size.Tier)
-	if err != nil {
-		return Report{}, err
-	}
-	scratch, err := os.CreateTemp("", "otto-answer-*.txt")
-	if err != nil {
-		return Report{}, err
-	}
-	scratch.Close()
-	defer os.Remove(scratch.Name())
-
-	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s)", repo, number, pool.Strategy),
-		"Preparando revisão…")
-	accept := func(out string) error { _, err := review.ParseResult(out, wt.Dir()); return err }
-	var progress func(string)
-	if opt.ShowProgress && opt.Progress != nil {
-		progress = opt.Progress
-	}
-	outcome, err := pool.Run(ctx, engine.Request{
-		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Progress: progress,
-		Contract: review.OutputContract(),
-	}, a.rotation(), accept)
-	if !opt.ShowProgress {
-		for _, f := range outcome.Failures {
-			a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
+	meta := format.Meta{Trigger: a.Cfg.Trigger, Size: size.Summary()}
+	var result review.Result
+	if parts := slice.Plan(diff.Stats(rawDiff)); len(parts) > 1 {
+		r, err := a.reviewInParts(ctx, repo, number, wt.Dir(), in, parts, size.Tier, opt)
+		if err != nil {
+			return Report{}, err
 		}
-	}
-	if err != nil {
-		if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
-			a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
-			post := a.postContext(ctx, repo, opt)
-			if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
-				return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
+		result = r.result
+		meta.Engine, meta.Parts, meta.Unreviewed, meta.IntegrationSkipped = r.engines, len(parts), r.unreviewed, r.integrationSkipped
+	} else {
+		pool, err := a.pool(opt.Engine, opt, size.Tier)
+		if err != nil {
+			return Report{}, err
+		}
+		a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s)", repo, number, pool.Strategy),
+			"Preparando revisão…")
+		var progress func(string)
+		if opt.ShowProgress && opt.Progress != nil {
+			progress = opt.Progress
+		}
+		outcome, err := a.runReview(ctx, pool, in, wt.Dir(), a.rotation(), progress)
+		if !opt.ShowProgress {
+			for _, f := range outcome.Failures {
+				a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
 			}
 		}
-		return Report{}, err
-	}
-	if opt.Engine == "" {
-		a.setRotation(outcome.Next)
+		if err != nil {
+			if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
+				a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
+				post := a.postContext(ctx, repo, opt)
+				if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
+					return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
+				}
+			}
+			return Report{}, err
+		}
+		if opt.Engine == "" {
+			a.setRotation(outcome.Next)
+		}
+		result, _ = review.ParseResult(outcome.Output, wt.Dir())
+		spec := pool.spec(outcome.Index)
+		meta.Engine, meta.Model, meta.Effort = spec.Name, spec.Model, spec.Effort
 	}
 
-	result, _ := review.ParseResult(outcome.Output, wt.Dir())
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
-	spec := pool.spec(outcome.Index)
-	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger, Size: size.Summary()}
 	if opt.PostToken != "" || opt.RefreshPostToken {
 		meta.Requester = opt.Requester
 	}
 	post := a.postContext(ctx, repo, opt)
 	payload := format.Payload(pr.HeadRefOid, placement, result, meta)
-	report := Report{Engine: spec.Name, Findings: len(placement.Inline) + len(placement.Outside)}
+	report := Report{Engine: meta.Engine, Findings: len(placement.Inline) + len(placement.Outside)}
 
 	if opt.DryRun {
 		finishProgress()
@@ -303,9 +300,9 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	report.Posted = true
 	finishProgress()
 	if opt.ShowProgress {
-		fmt.Fprintf(a.Out, "Otto Review: %d finding(s) · %s · posted\n", report.Findings, spec.Name)
+		fmt.Fprintf(a.Out, "Otto Review: %d finding(s) · %s · posted\n", report.Findings, report.Engine)
 	} else {
-		a.logf("%s#%d: posted review with %d findings (engine %s)", repo, number, report.Findings, spec.Name)
+		a.logf("%s#%d: posted review with %d findings (engine %s)", repo, number, report.Findings, report.Engine)
 	}
 	return report, nil
 }

@@ -46,6 +46,25 @@ caused by this change is a finding; quote the relevant log lines. If checks were
 `verification` entry saying so with result `skipped`.
 
 {{ end -}}
+{{- if .Part }}
+## Your part of this pull request
+
+This pull request is large, so it is reviewed in parts by several reviewers at the same time. {{ .Part }}
+Review only the files of your part (the diff below holds only them), but read any other file when you need it to
+understand them. Do not report problems that are only in files outside your part.
+
+{{ end -}}
+{{- if .Integration }}
+## Integration pass
+
+This pull request was reviewed in parts. Each part was reviewed on its own, so problems between parts can be missed.
+Look only for those: a contract, type, API, schema or behavior changed in one place and not followed in another,
+missing wiring, inconsistent rules between modules, and spec requirements that no single part covers.
+Do not repeat what the parts already found:
+
+{{ .Integration }}
+
+{{ end -}}
 ## Description written by the author
 
 {{ if .Body }}{{ .Body }}{{ else }}(empty){{ end }}

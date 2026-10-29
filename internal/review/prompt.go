@@ -34,6 +34,12 @@ type PromptInput struct {
 
 	// CI describes the pull request's CI checks on the reviewed commit, with failing log excerpts.
 	CI string
+
+	// Part, when set, says this reviewer covers only some files of a large pull request (the diff
+	// then holds only those files). Integration, when set, makes this the final pass that looks
+	// across all parts; it lists what the parts already found.
+	Part        string
+	Integration string
 }
 
 // BuildPrompt renders the review harness for one pull request.

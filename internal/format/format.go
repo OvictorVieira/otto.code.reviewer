@@ -32,6 +32,12 @@ type Meta struct {
 	Effort  string
 	Trigger string // defaults to "/otto review"
 	Size    string // how big Otto judged the pull request, and why
+	// Parts is how many reviewers shared a large pull request (0 or 1 = one reviewer).
+	Parts int
+	// Unreviewed are files no engine could review; the review is partial when it is not empty.
+	Unreviewed []string
+	// IntegrationSkipped says the pass across parts did not produce an answer.
+	IntegrationSkipped bool
 	// Requester is who asked for the review. It is shown only when Otto posts
 	// as its own identity; a review posted as the user needs no attribution.
 	Requester string
@@ -105,10 +111,20 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 	}
 
 	fmt.Fprintf(&b, "**Reviewed commit:** `%s`\n", short(commitSHA))
+	if len(m.Unreviewed) > 0 {
+		fmt.Fprintf(&b, "\n> ⚠️ **Partial review.** No engine could review %d file(s): %s\n", len(m.Unreviewed), strings.Join(m.Unreviewed, ", "))
+	}
 	b.WriteString("\n<details> <summary>ℹ️ About Otto in GitHub</summary>\n<br/>\n\n")
 	fmt.Fprintf(&b, "**Engine:** %s\n", engineLabel(m))
 	if m.Size != "" {
 		fmt.Fprintf(&b, "**Size:** %s\n", m.Size)
+	}
+	if m.Parts > 1 {
+		pass := "plus a pass across the parts"
+		if m.IntegrationSkipped {
+			pass = "the pass across the parts did not complete"
+		}
+		fmt.Fprintf(&b, "**Reviewed in:** %d parts in parallel, %s\n", m.Parts, pass)
 	}
 	if m.Requester != "" {
 		fmt.Fprintf(&b, "**Requested by:** @%s\n", m.Requester)
