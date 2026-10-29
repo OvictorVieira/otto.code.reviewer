@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/complexity"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/diff"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
@@ -72,8 +73,10 @@ type App struct {
 	Out       io.Writer
 	Host      Host
 	Checkouts Checkouts
-	Feedback  Feedback    // nil disables learning
-	CI        ci.Reader   // nil skips the CI evidence
+	Feedback  Feedback  // nil disables learning
+	CI        ci.Reader // nil skips the CI evidence
+	// Levels lists the effort levels a model accepts. Nil uses the engine's general list.
+	Levels    func(engineName, model string) []string
 	Learn     learn.Store // where Otto keeps what it learned, per repository
 	learnMu   sync.Mutex
 	learnBusy int32
@@ -126,6 +129,7 @@ func New(out io.Writer) (*App, error) {
 		Checkouts:   gitCheckouts{},
 		Feedback:    github.CLI{},
 		CI:          github.CLI{},
+		Levels:      engine.CachedLevels(),
 		Learn:       learn.Store{Dir: filepath.Join(dir, "learning")},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
 		Installed:   engine.Installed,
@@ -203,6 +207,10 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	}
 	defer wt.Remove()
 
+	size, instructions := a.assess(wt.Dir(), rawDiff, opt.Instructions)
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: size %s", repo, number, size.Summary()), fmt.Sprintf("Tamanho do PR: %s", size.Tier))
+	opt.Instructions = instructions
+
 	lessons, prior := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
 	ciEvidence := a.ciEvidence(ctx, repo, number, pr.HeadRefOid, opt)
 	prompt, err := review.BuildPrompt(review.PromptInput{
@@ -216,7 +224,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	a.reviewStatus(opt, fmt.Sprintf("%s#%d: preparing review instructions for %d changed files", repo, number, len(d.Files())),
 		fmt.Sprintf("Preparando análise de %d arquivos…", len(d.Files())))
 
-	pool, err := a.pool(opt.Engine, opt)
+	pool, err := a.pool(opt.Engine, opt, size.Tier)
 	if err != nil {
 		return Report{}, err
 	}
@@ -260,7 +268,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	result, _ := review.ParseResult(outcome.Output, wt.Dir())
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
 	spec := pool.spec(outcome.Index)
-	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger}
+	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger, Size: size.Summary()}
 	if opt.PostToken != "" || opt.RefreshPostToken {
 		meta.Requester = opt.Requester
 	}
@@ -335,7 +343,8 @@ type pool struct {
 
 func (p pool) spec(i int) engine.Spec { return p.specs[i] }
 
-func (a *App) pool(only string, opt Options) (pool, error) {
+// pool lists the engines to try, each resolved for the size of the pull request (model and effort).
+func (a *App) pool(only string, opt Options, tier engine.Tier) (pool, error) {
 	var p pool
 	p.Strategy = a.Cfg.Strategy
 	p.AttemptTimeout = a.Cfg.EngineTimeout
@@ -349,6 +358,7 @@ func (a *App) pool(only string, opt Options) (pool, error) {
 				fmt.Sprintf("Ignorando %s: não está instalado…", s.Name))
 			continue
 		}
+		s = a.forTier(s, tier)
 		p.Engines = append(p.Engines, a.NewEngine(s))
 		p.specs = append(p.specs, s)
 		p.Labels = append(p.Labels, specLabel(s))
@@ -611,4 +621,42 @@ func (a *App) ciEvidence(ctx context.Context, repo string, number int, sha strin
 		a.logf("%s#%d: CI still running after %s; reviewing anyway", repo, number, a.Cfg.CIWait)
 	}
 	return ci.Render(rep)
+}
+
+// sizeWords lets a reviewer force the size by starting the request with it, e.g. "@otto-assist review heavy".
+var sizeWords = map[string]engine.Tier{
+	"light": engine.Light, "leve": engine.Light,
+	"medium": engine.Medium, "medio": engine.Medium, "médio": engine.Medium,
+	"heavy": engine.Heavy, "pesado": engine.Heavy,
+}
+
+// assess sizes the pull request. A size word at the start of the request's instructions wins and
+// is removed from them.
+func (a *App) assess(dir, rawDiff, instructions string) (complexity.Assessment, string) {
+	cfg, err := complexity.LoadConfig(dir)
+	if err != nil {
+		a.logf("reading .otto.yml failed, using the default sensitive paths: %v", err)
+	}
+	size := complexity.Assess(diff.Stats(rawDiff), cfg.Sensitive)
+	if fields := strings.Fields(instructions); len(fields) > 0 {
+		if t, ok := sizeWords[strings.ToLower(fields[0])]; ok {
+			size.Tier = t
+			size.Reasons = append(size.Reasons, "size asked for in the request")
+			instructions = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(instructions), fields[0]))
+		}
+	}
+	return size, instructions
+}
+
+// forTier resolves an engine's model and effort for the size of the pull request.
+func (a *App) forTier(s engine.Spec, tier engine.Tier) engine.Spec {
+	model := s.Model
+	if m := s.Tiers.For(tier); m != "" {
+		model = m
+	}
+	levels := engine.Efforts(s.Name)
+	if a.Levels != nil {
+		levels = a.Levels(s.Name, model)
+	}
+	return s.ForTier(tier, levels)
 }

@@ -31,6 +31,7 @@ type Meta struct {
 	Model   string
 	Effort  string
 	Trigger string // defaults to "/otto review"
+	Size    string // how big Otto judged the pull request, and why
 	// Requester is who asked for the review. It is shown only when Otto posts
 	// as its own identity; a review posted as the user needs no attribution.
 	Requester string
@@ -106,6 +107,9 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 	fmt.Fprintf(&b, "**Reviewed commit:** `%s`\n", short(commitSHA))
 	b.WriteString("\n<details> <summary>ℹ️ About Otto in GitHub</summary>\n<br/>\n\n")
 	fmt.Fprintf(&b, "**Engine:** %s\n", engineLabel(m))
+	if m.Size != "" {
+		fmt.Fprintf(&b, "**Size:** %s\n", m.Size)
+	}
 	if m.Requester != "" {
 		fmt.Fprintf(&b, "**Requested by:** @%s\n", m.Requester)
 	}

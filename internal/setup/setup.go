@@ -324,7 +324,7 @@ func (w *wizard) stepEngines() step {
 func (w *wizard) engineSteps() []step {
 	var s []step
 	for i := range w.cfg.Engines {
-		s = append(s, w.stepModel(i), w.stepEffort(i))
+		s = append(s, w.stepModel(i))
 	}
 	if len(w.cfg.Engines) > 1 {
 		s = append(s, w.stepStrategy())
@@ -376,12 +376,7 @@ func (w *wizard) stepModel(i int) step {
 				footer = spec.Name + " did not list any model"
 			}
 
-			set := func(model string) {
-				if model != spec.Model {
-					spec.Effort = "" // the old effort may not exist for the new model
-				}
-				spec.Model = model
-			}
+			set := func(model string) { spec.Model = model }
 			m := picker.New(picker.Options{Title: spec.Name + " · select model", Items: items, Selected: spec.Model, Footer: footer})
 			return m, func(vals []string) *nested {
 				if len(vals) == 0 {
@@ -398,32 +393,6 @@ func (w *wizard) stepModel(i int) step {
 			}
 		},
 	}
-}
-
-func (w *wizard) stepEffort(i int) step {
-	return step{show: func() (ui, func([]string) *nested) {
-		spec := &w.cfg.Engines[i]
-		levels := w.deps.Efforts(spec.Name)
-		for _, m := range w.catalogs[spec.Name] {
-			if m.ID == spec.Model {
-				levels = m.Efforts
-			}
-		}
-		if len(levels) == 0 {
-			spec.Effort = ""
-			return nil, nil
-		}
-		items := []picker.Item{{Value: cliDefault, Title: "Default", Hint: "the CLI's default effort"}}
-		for _, l := range levels {
-			items = append(items, picker.Item{Value: l, Title: l})
-		}
-		current := spec.Effort
-		if !slices.Contains(levels, current) {
-			current = cliDefault
-		}
-		return choice(fmt.Sprintf("%s · select effort for %s", spec.Name, orDefault(spec.Model)), items, current,
-			fmt.Sprintf("%d levels", len(levels)), func(v string) { spec.Effort = v })
-	}}
 }
 
 func (w *wizard) stepStrategy() step {
@@ -620,7 +589,7 @@ func Run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintf(out, "  watching   %d repositories\n", len(w.cfg.Repos.Selected))
 	}
 	for _, e := range w.cfg.Engines {
-		fmt.Fprintf(out, "  engine     %-9s model %s · effort %s\n", e.Name, orDefault(e.Model), orDefault(e.Effort))
+		fmt.Fprintf(out, "  engine     %-9s model %s · effort auto (by pull request size)\n", e.Name, orDefault(e.Model))
 	}
 	if len(w.cfg.Engines) > 1 {
 		fmt.Fprintf(out, "  strategy   %s\n", w.cfg.Strategy)

@@ -207,11 +207,11 @@ func TestPromptGrowthIsBoundedNoMatterHowMuchWasLearned(t *testing.T) {
 
 func TestReviewLogsTheModelEachEngineRunsWithAndFlagsTheCLIDefault(t *testing.T) {
 	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
-	h.app.Cfg.Engines = []engine.Spec{{Name: "claude", Model: "sonnet", Effort: "high"}}
+	h.app.Cfg.Engines = []engine.Spec{{Name: "claude", Model: "sonnet"}}
 	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(h.out.String(), "trying claude · sonnet · high") {
+	if !strings.Contains(h.out.String(), "trying claude · sonnet · low") {
 		t.Fatalf("the log must say which model ran:\n%s", h.out.String())
 	}
 
@@ -257,5 +257,61 @@ func TestReviewTellsTheEngineToCheckTestsForNewBehavior(t *testing.T) {
 		if !strings.Contains(got.Prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+// recordSpecs makes the harness remember which resolved spec each engine was built with.
+func recordSpecs(h *harness) *[]engine.Spec {
+	var specs []engine.Spec
+	next := h.app.NewEngine
+	h.app.NewEngine = func(s engine.Spec) engine.Engine { specs = append(specs, s); return next(s) }
+	return &specs
+}
+
+func TestASmallPullRequestIsReviewedWithLowEffortAndTheSizeIsShown(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.Engines = []engine.Spec{{Name: "claude", Model: "sonnet"}}
+	specs := recordSpecs(h)
+
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(*specs) != 1 || (*specs)[0].Effort != "low" {
+		t.Fatalf("specs = %+v, want effort low for a one-line change", *specs)
+	}
+	if !strings.Contains(h.host.posted[0].Body, "**Size:** light") || !strings.Contains(h.out.String(), "size light") {
+		t.Fatalf("the size must be logged and shown:\n%s\n%s", h.host.posted[0].Body, h.out.String())
+	}
+}
+
+func TestTheRequestCanForceTheSizeAndTheWordIsNotPassedOnAsAnInstruction(t *testing.T) {
+	var got engine.Request
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, got: &got})
+	h.app.Cfg.Engines = []engine.Spec{{Name: "claude", Tiers: engine.TierModels{Heavy: "opus"}}}
+	specs := recordSpecs(h)
+
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{Instructions: "heavy foco em concorrência"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if s := (*specs)[0]; s.Effort != "high" || s.Model != "opus" {
+		t.Fatalf("spec = %+v, want the heavy model and effort", s)
+	}
+	if !strings.Contains(got.Prompt, "Extra instructions from the requester: foco em concorrência") {
+		t.Fatal("the rest of the request must still reach the reviewer, without the size word")
+	}
+}
+
+func TestAnOldEffortInTheConfigIsIgnored(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.Engines = []engine.Spec{{Name: "claude", Effort: "xhigh"}}
+	specs := recordSpecs(h)
+
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if (*specs)[0].Effort != "low" {
+		t.Fatalf("spec = %+v, want the effort picked from the size", (*specs)[0])
 	}
 }

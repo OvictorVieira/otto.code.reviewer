@@ -174,7 +174,7 @@ func (a *App) distill(ctx context.Context, current []learn.Lesson, recs []learn.
 	if err != nil {
 		return nil, err
 	}
-	pool, err := a.pool("", Options{})
+	pool, err := a.pool("", Options{}, engine.Medium)
 	if err != nil {
 		return nil, err
 	}

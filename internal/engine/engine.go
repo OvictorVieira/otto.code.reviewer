@@ -20,9 +20,76 @@ import (
 
 // Spec is one configured engine.
 type Spec struct {
-	Name   string `yaml:"name"`
-	Model  string `yaml:"model,omitempty"`  // empty = CLI default
-	Effort string `yaml:"effort,omitempty"` // empty = CLI default
+	Name  string `yaml:"name"`
+	Model string `yaml:"model,omitempty"` // empty = CLI default
+	// Effort is not configured: Otto resolves it for each review from the size of the pull request.
+	Effort string `yaml:"-"`
+	// Tiers optionally names a model per size of pull request; an empty size uses Model.
+	Tiers TierModels `yaml:"tiers,omitempty"`
+}
+
+// TierModels names the model to use for each size of pull request.
+type TierModels struct {
+	Light  string `yaml:"light,omitempty"`
+	Medium string `yaml:"medium,omitempty"`
+	Heavy  string `yaml:"heavy,omitempty"`
+}
+
+// tierEffort is the effort each size of pull request asks for.
+var tierEffort = map[Tier]string{Light: "low", Medium: "medium", Heavy: "high"}
+
+// effortScale orders every effort name engines use, from least to most thinking.
+var effortScale = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// ForTier resolves the model and effort this engine uses for a pull request of the given size.
+// A model named for that size wins over the default model. The effort is the level the model
+// accepts that is closest to what the size asks for (the lower one on a tie: faster and cheaper).
+func (s Spec) ForTier(t Tier, levels []string) Spec {
+	out := Spec{Name: s.Name, Model: s.Model, Tiers: s.Tiers}
+	if m := s.Tiers.For(t); m != "" {
+		out.Model = m
+	}
+	out.Effort = closestEffort(tierEffort[t], levels)
+	return out
+}
+
+// For returns the model named for size t, or "".
+func (m TierModels) For(t Tier) string {
+	switch t {
+	case Light:
+		return m.Light
+	case Medium:
+		return m.Medium
+	case Heavy:
+		return m.Heavy
+	}
+	return ""
+}
+
+func closestEffort(want string, levels []string) string {
+	idx := func(l string) int {
+		for i, e := range effortScale {
+			if e == l {
+				return i
+			}
+		}
+		return -1
+	}
+	w, best, bestDist := idx(want), "", 1<<30
+	for _, l := range levels {
+		i := idx(l)
+		if i < 0 {
+			continue
+		}
+		d := i - w
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDist || (d == bestDist && i < idx(best)) {
+			best, bestDist = l, d
+		}
+	}
+	return best
 }
 
 // Request is one review run.

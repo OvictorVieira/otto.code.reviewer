@@ -149,8 +149,8 @@ func TestCopilotListsPremiumModelsAndAllowsTypingOtherIds(t *testing.T) {
 	if got := d.w.cfg.Engines[0].Model; got != "gpt-5.3-codex" {
 		t.Fatalf("model = %q, want gpt-5.3-codex", got)
 	}
-	if !strings.Contains(d.screen(), "select effort") {
-		t.Fatalf("expected Copilot effort step:\n%s", d.screen())
+	if strings.Contains(d.screen(), "select effort") {
+		t.Fatalf("the effort is picked per pull request, never in setup:\n%s", d.screen())
 	}
 }
 
@@ -172,19 +172,19 @@ func TestEverythingHappensInOneProgramWithLoadingInsideIt(t *testing.T) {
 	}
 }
 
-func TestPickingAModelThenItsOwnEffortLevelsAndSkippingWhenThereAreNone(t *testing.T) {
+func TestPickingAModelGoesStraightOnWithoutAnEffortScreen(t *testing.T) {
 	d := start(t)
 	d.key(tea.KeyEnter)
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter) // opencode only
 	// Rows: CLI default, beam-free, big-pickle, claude-sonnet-4.
-	// Two downs from CLI default lands on big-pickle, which has no effort levels.
+	// Two downs from CLI default lands on big-pickle.
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyEnter)
 	spec := d.w.cfg.Engines[0]
 	if spec.Model != "opencode/big-pickle" {
 		t.Fatalf("model = %q", spec.Model)
 	}
 	if strings.Contains(d.screen(), "select effort") {
-		t.Errorf("a model without effort levels must skip the effort screen:\n%s", d.screen())
+		t.Errorf("setup must not ask for an effort:\n%s", d.screen())
 	}
 	if !strings.Contains(d.screen(), "Language of the review comments") {
 		t.Errorf("expected to land on the language step:\n%s", d.screen())
@@ -209,7 +209,7 @@ func TestEscGoesBackOneStepAndKeepsTheEarlierChoices(t *testing.T) {
 func finishToIdentity(d *driver) {
 	d.key(tea.KeyEnter)                                        // repos
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter) // opencode
-	d.key(tea.KeyEnter)                                        // model: CLI default (effort is skipped)
+	d.key(tea.KeyEnter)                                        // model: CLI default
 	d.key(tea.KeyEnter)                                        // language
 }
 
@@ -290,7 +290,7 @@ func startWith(t *testing.T, cfg config.Config, catalog map[string][]engine.Mode
 
 func TestChangingTheModelOfAnEngineAlreadyConfiguredReplacesTheSavedOne(t *testing.T) {
 	cfg := config.Default()
-	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna"}}
 	catalog := map[string][]engine.Model{"codex": {
 		{ID: "gpt-6-luna", Name: "gpt-6-luna", Efforts: []string{"low", "medium", "high"}},
 		{ID: "gpt-6-sol", Name: "gpt-6-sol", Efforts: []string{"low", "medium", "high"}},
@@ -312,14 +312,11 @@ func TestChangingTheModelOfAnEngineAlreadyConfiguredReplacesTheSavedOne(t *testi
 	if got[0].Model == "gpt-6-luna" || got[0].Model == "" {
 		t.Errorf("model = %q: the model picked in the wizard was not applied", got[0].Model)
 	}
-	if got[0].Effort != "" {
-		t.Errorf("effort = %q, want it cleared until chosen again for the new model", got[0].Effort)
-	}
 }
 
 func TestAddingAnotherEngineKeepsTheOneAlreadyConfiguredAndItsModel(t *testing.T) {
 	cfg := config.Default()
-	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna"}}
 	d := startWith(t, cfg, catalogs)
 
 	d.key(tea.KeyEnter)                           // repos
@@ -333,8 +330,8 @@ func TestAddingAnotherEngineKeepsTheOneAlreadyConfiguredAndItsModel(t *testing.T
 	if strings.Join(names, ",") != "codex,opencode" {
 		t.Fatalf("engines = %v, want codex and opencode", names)
 	}
-	if got := d.w.cfg.Engines[0]; got.Model != "gpt-6-luna" || got.Effort != "medium" {
-		t.Errorf("codex = %+v, want its saved model and effort kept", got)
+	if got := d.w.cfg.Engines[0]; got.Model != "gpt-6-luna" {
+		t.Errorf("codex = %+v, want its saved model kept", got)
 	}
 }
 
@@ -342,7 +339,7 @@ func TestWithCodexAlreadyConfiguredPickingOpencodeOpensOpencodeNotCodex(t *testi
 	// Regression: codex was pre-checked from the saved config, so arrowing to opencode and
 	// pressing enter opened codex's model list.
 	cfg := config.Default()
-	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna"}}
 	d := startWith(t, cfg, catalogs)
 
 	d.key(tea.KeyEnter)                           // repos
@@ -358,7 +355,7 @@ func TestWithCodexAlreadyConfiguredPickingOpencodeOpensOpencodeNotCodex(t *testi
 
 func TestPressingEnterOnTheEnginesStepKeepsTheConfiguredEngine(t *testing.T) {
 	cfg := config.Default()
-	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "medium"}}
+	cfg.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna"}}
 	d := startWith(t, cfg, catalogs)
 
 	d.key(tea.KeyEnter, tea.KeyEnter) // repos, then engines without touching anything

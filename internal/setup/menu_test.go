@@ -159,7 +159,7 @@ func TestChangingOnlyTheModelKeepsTheEngineAndTheRest(t *testing.T) {
 	d.pick("Change model")
 	d.shows("opencode · select model")
 	d.pick("Big Pickle")
-	// big-pickle has no effort levels, so the next screen is the model list again
+	// no effort screen: the effort is picked for each pull request
 	d.shows("Models and fallback", "big-pickle")
 	d.pick("Done")
 
@@ -181,8 +181,6 @@ func TestAddingAFallbackModelKeepsTheFirstOneAndAsksHowToUseThem(t *testing.T) {
 	d.pick("claude")
 	d.shows("claude · select model")
 	d.pick("sonnet")
-	d.shows("select effort")
-	d.key(tea.KeyEnter) // default effort
 	d.shows("When more than one engine")
 	d.pick("Priority")
 
@@ -296,7 +294,7 @@ func TestPickingAFreeModelSavesExactlyThatIdNotAPaidLookAlike(t *testing.T) {
 		}
 	})
 	cfg := configured()
-	cfg.Engines = []engine.Spec{{Name: "opencode", Effort: "medium"}} // saved on the CLI default, as in a real config
+	cfg.Engines = []engine.Spec{{Name: "opencode"}} // saved on the CLI default, as in a real config
 
 	d := startMenu(t, cfg)
 	d.pick("Models")
@@ -304,16 +302,12 @@ func TestPickingAFreeModelSavesExactlyThatIdNotAPaidLookAlike(t *testing.T) {
 	d.pick("Change model")
 	d.shows("opencode · select model")
 	d.pick("deepseek v4.1 flash free")
-	d.shows("select effort for opencode/deepseek-v4.1-flash-free", "high")
-	d.pick("high")
+	d.shows("Models and fallback", "deepseek-v4.1-flash-free")
 	d.pick("Done")
 	d.pick("Save")
 
 	if got := engineNames(d); got != "opencode=opencode/deepseek-v4.1-flash-free" {
 		t.Fatalf("engines = %s, want the picked free model", got)
-	}
-	if d.w.cfg.Engines[0].Effort != "high" {
-		t.Fatalf("effort = %q, want one of the model's own levels", d.w.cfg.Engines[0].Effort)
 	}
 	if !d.w.finished {
 		t.Fatal("save and exit must finish the setup")

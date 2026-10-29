@@ -51,7 +51,7 @@ func TestSaveThenLoadKeepsEverySetting(t *testing.T) {
 	t.Setenv("OTTO_HOME", t.TempDir())
 	want := Default()
 	want.Repos = Repos{Selected: []string{"o/a", "o/b"}}
-	want.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "high"}, {Name: "cursor"}}
+	want.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna"}, {Name: "cursor"}}
 	want.Strategy = engine.Priority
 	want.PollInterval = 2 * time.Minute
 

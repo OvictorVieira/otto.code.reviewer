@@ -120,9 +120,6 @@ func (w *wizard) stepChain() step {
 				role = "takes turns"
 			}
 			hint := role
-			if e.Effort != "" {
-				hint += " · effort " + e.Effort
-			}
 			items = append(items, picker.Item{Value: fmt.Sprintf("e%d", i), Title: fmt.Sprintf("%d. %s · %s", i+1, e.Name, orDefault(e.Model)), Hint: hint, Group: group})
 		}
 		order := "Rotate"
@@ -175,7 +172,7 @@ func (w *wizard) pickEngineToAdd() *nested {
 			}
 			w.cfg.Engines = append(w.cfg.Engines, engine.Spec{Name: vals[0]})
 			k := len(w.cfg.Engines) - 1
-			next := []step{w.stepModel(k), w.stepEffort(k)}
+			next := []step{w.stepModel(k)}
 			if len(w.cfg.Engines) > 1 && w.cfg.Strategy != engine.Priority {
 				next = append(next, w.stepStrategy())
 			}
@@ -188,7 +185,7 @@ func (w *wizard) pickEngineToAdd() *nested {
 func (w *wizard) modelActions(k int) *nested {
 	e := w.cfg.Engines[k]
 	group := fmt.Sprintf("%d. %s · %s", k+1, e.Name, orDefault(e.Model))
-	items := []picker.Item{{Value: "model", Title: "Change model", Hint: "pick another model, or another effort", Group: group}}
+	items := []picker.Item{{Value: "model", Title: "Change model", Hint: "pick another model", Group: group}}
 	if k > 0 {
 		items = append(items, picker.Item{Value: "up", Title: "Move up", Hint: "tried earlier", Group: group})
 	}
@@ -207,7 +204,7 @@ func (w *wizard) modelActions(k int) *nested {
 			}
 			switch vals[0] {
 			case "model":
-				w.insertAfterCurrent(w.stepModel(k), w.stepEffort(k), w.stepChain())
+				w.insertAfterCurrent(w.stepModel(k), w.stepChain())
 			case "up":
 				w.cfg.Engines[k-1], w.cfg.Engines[k] = w.cfg.Engines[k], w.cfg.Engines[k-1]
 				w.chainLast = fmt.Sprintf("e%d", k-1)
