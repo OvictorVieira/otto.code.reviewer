@@ -32,6 +32,8 @@ type ThreadComment struct {
 	Body   string
 	Up     int // thumbs up reactions
 	Down   int // thumbs down reactions
+	UpBy   []string
+	DownBy []string
 }
 
 // Thread is a pull request review thread as returned by GitHub.
@@ -65,8 +67,14 @@ var (
 	rejectReply = regexp.MustCompile(`(?i)(won'?t fix|wontfix|will not fix|already rejected|not applicable|n[aã]o vou corrigir|rejeitad)`)
 )
 
-// Extract keeps the threads Otto started and infers the outcome of each.
-func Extract(repo string, pr int, threads []Thread, now time.Time) []Record {
+// Extract keeps the threads Otto started and infers the outcome of each. Only replies and
+// reactions from trusted people count: anyone else could write a reply meant to teach Otto to stop
+// flagging a real problem. A nil trusted trusts everyone (tests, single-user setups).
+func Extract(repo string, pr int, threads []Thread, now time.Time, trusted ...func(login string) bool) []Record {
+	trust := func(string) bool { return true }
+	if len(trusted) > 0 && trusted[0] != nil {
+		trust = trusted[0]
+	}
 	var out []Record
 	for _, t := range threads {
 		if len(t.Comments) == 0 {
@@ -84,9 +92,12 @@ func Extract(repo string, pr int, threads []Thread, now time.Time) []Record {
 		}
 		var replies []string
 		for _, c := range t.Comments[1:] {
-			if txt := strings.TrimSpace(c.Body); txt != "" {
+			if txt := strings.TrimSpace(c.Body); txt != "" && trust(c.Author) {
 				replies = append(replies, txt)
 			}
+		}
+		if len(trusted) > 0 && trusted[0] != nil {
+			first.Up, first.Down = countTrusted(first.UpBy, trust), countTrusted(first.DownBy, trust)
 		}
 		rec.Outcome = infer(first, replies, t.Resolved)
 		for _, r := range replies {
@@ -147,4 +158,14 @@ func clip(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+func countTrusted(logins []string, trust func(string) bool) int {
+	n := 0
+	for _, l := range logins {
+		if trust(l) {
+			n++
+		}
+	}
+	return n
 }

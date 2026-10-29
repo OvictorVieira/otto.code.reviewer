@@ -43,7 +43,7 @@ func (a *App) collect(ctx context.Context, repo string, pr int) (learn.Memory, e
 	if terr != nil {
 		return mem, terr
 	}
-	if mem.Merge(learn.Extract(repo, pr, threads, time.Now())) > 0 {
+	if mem.Merge(learn.Extract(repo, pr, threads, time.Now(), a.trusted(ctx))) > 0 {
 		err = a.Learn.Save(repo, mem)
 	}
 	return mem, err
@@ -174,7 +174,7 @@ func (a *App) distill(ctx context.Context, current []learn.Lesson, recs []learn.
 	if err != nil {
 		return nil, err
 	}
-	pool, err := a.pool("", Options{})
+	pool, err := a.pool("", Options{}, engine.Medium)
 	if err != nil {
 		return nil, err
 	}
@@ -234,4 +234,19 @@ func (a *App) EditLesson(repo, id, action string) error {
 		return a.Learn.Save(repo, mem)
 	}
 	return fmt.Errorf("no lesson with id %q in %s", id, repo)
+}
+
+// trusted says whose replies and reactions Otto learns from: the people allowed to ask for reviews
+// (or, when none are configured, the user Otto runs as).
+func (a *App) trusted(ctx context.Context) func(string) bool {
+	allowed := map[string]bool{}
+	for _, l := range a.Cfg.AllowedAuthors {
+		allowed[strings.ToLower(l)] = true
+	}
+	if len(allowed) == 0 {
+		if login, err := a.Host.Login(ctx); err == nil {
+			allowed[strings.ToLower(login)] = true
+		}
+	}
+	return func(login string) bool { return allowed[strings.ToLower(login)] }
 }

@@ -261,3 +261,41 @@ func TestBrandsThatOnlyDifferInCaseAreOneGroup(t *testing.T) {
 		t.Errorf("groups = %v, want Google and OpenAI once each", groups)
 	}
 }
+
+func TestFreeModelsThatPassedTheEvalAreRecommendedOnTop(t *testing.T) {
+	models := append(opencodeModels(),
+		Model{ID: "openrouter/cohere/north-mini-code:free", Name: "North Mini Code", Free: true, PriceKnown: true},
+		Model{ID: "opencode/big-pickle", Name: "Big Pickle", Free: true, PriceKnown: true},
+		Model{ID: "openrouter/thinkingmachines/inkling:free", Name: "Inkling", Free: true, PriceKnown: true},
+	)
+	got := OrderModels("opencode", models)
+
+	want := []string{"openrouter/cohere/north-mini-code:free", "opencode/big-pickle", "openrouter/thinkingmachines/inkling:free",
+		"openrouter/anthropic/claude-haiku-5.5", "openrouter/anthropic/claude-sonnet-5.5", "openrouter/anthropic/claude-opus-5.5"}
+	if !slices.Equal(ids(got)[:6], want) {
+		t.Fatalf("top = %v, want the free picks (light to heavy) above the paid ones", ids(got)[:6])
+	}
+	if got[0].Group != RecommendedFreeGroup || !strings.Contains(got[0].Tag, "free") {
+		t.Fatalf("first = %+v", got[0])
+	}
+	// deepseek-v4.1-flash-free did not answer within four minutes in the eval: still not recommended.
+	if _, ok := RecommendedTier("opencode", "opencode/deepseek-v4.1-flash-free"); ok {
+		t.Fatal("deepseek-v4.1-flash-free must stay unrecommended")
+	}
+}
+
+func TestRecommendedTiersGivesAFullFreeOrPaidSet(t *testing.T) {
+	free, ok := RecommendedTiers("opencode", true)
+	if !ok || free.Light != "openrouter/cohere/north-mini-code:free" || free.Medium != "opencode/big-pickle" || free.Heavy != "openrouter/thinkingmachines/inkling:free" {
+		t.Fatalf("free = %+v ok=%v", free, ok)
+	}
+	if paid, ok := RecommendedTiers("claude", false); !ok || paid.Light != "haiku" || paid.Heavy != "opus" {
+		t.Fatalf("paid = %+v", paid)
+	}
+	if _, ok := RecommendedTiers("codex", false); ok {
+		t.Fatal("codex has a single pick, not a full set")
+	}
+	if _, ok := RecommendedTiers("claude", true); ok {
+		t.Fatal("claude has no free models")
+	}
+}

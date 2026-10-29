@@ -79,3 +79,42 @@ func (d Diff) SameHunk(path string, start, end int) bool {
 func (d Diff) Files() []string {
 	return append([]string(nil), d.order...)
 }
+
+// FileStat is the size of one file's change.
+type FileStat struct {
+	Path    string
+	Added   int
+	Removed int
+	New     bool // the file did not exist before
+	Deleted bool // the file no longer exists
+}
+
+// Stats counts added and removed lines per file, including deleted files, in diff order.
+func Stats(text string) []FileStat {
+	var out []FileStat
+	var cur *FileStat
+	inHunk := false
+	for _, raw := range strings.Split(text, "\n") {
+		switch {
+		case strings.HasPrefix(raw, "diff --git "):
+			out = append(out, FileStat{})
+			cur, inHunk = &out[len(out)-1], false
+			if f := strings.Fields(raw); len(f) >= 4 {
+				cur.Path = strings.TrimPrefix(f[3], "b/")
+			}
+		case cur == nil:
+		case strings.HasPrefix(raw, "new file mode"):
+			cur.New = true
+		case strings.HasPrefix(raw, "deleted file mode"):
+			cur.Deleted = true
+		case strings.HasPrefix(raw, "@@"):
+			inHunk = true
+		case !inHunk:
+		case strings.HasPrefix(raw, "+"):
+			cur.Added++
+		case strings.HasPrefix(raw, "-"):
+			cur.Removed++
+		}
+	}
+	return out
+}

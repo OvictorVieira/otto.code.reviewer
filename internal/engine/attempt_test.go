@@ -45,6 +45,16 @@ func TestAHungEngineFailsOverInsteadOfConsumingTheWholeReview(t *testing.T) {
 	}
 }
 
+func TestFallbackStillGetsATurnWhenLessThanDefaultMinimumRemains(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	p := Pool{Strategy: Priority, Engines: []Engine{hang{"opencode"}, answers{"claude"}}}
+	out, err := p.Run(ctx, Request{}, 0, accept)
+	if err != nil || out.Engine != "claude" {
+		t.Fatalf("fallback lost the short remaining deadline: out=%+v err=%v", out, err)
+	}
+}
+
 func TestEveryEngineGetsATurnEvenWhenTheFirstTwoHang(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 	defer cancel()

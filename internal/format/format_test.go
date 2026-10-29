@@ -261,3 +261,16 @@ func TestFailureAdviceMatchesWhatWentWrong(t *testing.T) {
 		})
 	}
 }
+
+func TestASecretAModelWasTrickedIntoQuotingIsNeverPosted(t *testing.T) {
+	leak := "Key: -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----"
+	r := review.Result{Explanation: leak}
+	p := review.Placement{Inline: []review.Finding{{Path: "a.go", Start: 1, End: 1, Priority: 1, Title: "t", Body: "token ghp_abcdefghijklmnopqrstuvwxyz0123"}}}
+	out := Payload("abc1234", p, r, Meta{Engine: "claude"})
+	if strings.Contains(out.Body, "b3BlbnNzaC1rZXktdjEAAAAA") || strings.Contains(out.Comments[0].Body, "ghp_abcdef") {
+		t.Fatalf("secret posted:\n%s\n%s", out.Body, out.Comments[0].Body)
+	}
+	if out.Event != "COMMENT" {
+		t.Fatalf("event = %s, Otto never approves or blocks", out.Event)
+	}
+}

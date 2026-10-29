@@ -46,7 +46,7 @@ func (w *wizard) insertAfterCurrent(next ...step) {
 func (w *wizard) engineChain() string {
 	var parts []string
 	for _, e := range w.cfg.Engines {
-		parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, orDefault(e.Model)))
+		parts = append(parts, fmt.Sprintf("%s (%s)", e.Name, modelSummary(e)))
 	}
 	return strings.Join(parts, " → ")
 }
@@ -68,16 +68,11 @@ func (w *wizard) identitySummary() string {
 func (w *wizard) stepMenu() step {
 	return step{show: func() (ui, func([]string) *nested) {
 		group := "What do you want to change?"
-		verify := "only read the code"
-		if w.cfg.Verify {
-			verify = "run the project"
-		}
 		items := []picker.Item{
 			{Value: "models", Title: "Models and fallback", Hint: w.engineChain(), Group: group},
 			{Value: "repos", Title: "Repositories to watch", Hint: w.repoSummary(), Group: group},
 			{Value: "identity", Title: "Who posts the reviews", Hint: w.identitySummary(), Group: group},
 			{Value: "language", Title: "Language of the comments", Hint: w.cfg.Language, Group: group},
-			{Value: "verify", Title: "Run the project while reviewing", Hint: verify, Group: group},
 			{Value: "service", Title: "Background service", Hint: "start Otto now and at every login", Group: group},
 			{Value: "full", Title: "Everything (full setup)", Hint: "go through every step", Group: group},
 			{Value: "save", Title: "Save and exit", Group: "Done"},
@@ -88,7 +83,6 @@ func (w *wizard) stepMenu() step {
 			"repos":    {w.stepRepos()},
 			"identity": {w.stepIdentity()},
 			"language": {w.stepLanguage()},
-			"verify":   {w.stepVerify()},
 			"service":  {w.stepService()},
 			"full":     {w.stepRepos(), w.stepEngines()},
 		}
@@ -126,10 +120,7 @@ func (w *wizard) stepChain() step {
 				role = "takes turns"
 			}
 			hint := role
-			if e.Effort != "" {
-				hint += " · effort " + e.Effort
-			}
-			items = append(items, picker.Item{Value: fmt.Sprintf("e%d", i), Title: fmt.Sprintf("%d. %s · %s", i+1, e.Name, orDefault(e.Model)), Hint: hint, Group: group})
+			items = append(items, picker.Item{Value: fmt.Sprintf("e%d", i), Title: fmt.Sprintf("%d. %s · %s", i+1, e.Name, modelSummary(e)), Hint: hint, Group: group})
 		}
 		order := "Rotate"
 		if w.cfg.Strategy == engine.Priority {
@@ -181,7 +172,7 @@ func (w *wizard) pickEngineToAdd() *nested {
 			}
 			w.cfg.Engines = append(w.cfg.Engines, engine.Spec{Name: vals[0]})
 			k := len(w.cfg.Engines) - 1
-			next := []step{w.stepModel(k), w.stepEffort(k)}
+			next := []step{w.stepModel(k)}
 			if len(w.cfg.Engines) > 1 && w.cfg.Strategy != engine.Priority {
 				next = append(next, w.stepStrategy())
 			}
@@ -194,7 +185,7 @@ func (w *wizard) pickEngineToAdd() *nested {
 func (w *wizard) modelActions(k int) *nested {
 	e := w.cfg.Engines[k]
 	group := fmt.Sprintf("%d. %s · %s", k+1, e.Name, orDefault(e.Model))
-	items := []picker.Item{{Value: "model", Title: "Change model", Hint: "pick another model, or another effort", Group: group}}
+	items := []picker.Item{{Value: "model", Title: "Change model", Hint: "pick another model", Group: group}}
 	if k > 0 {
 		items = append(items, picker.Item{Value: "up", Title: "Move up", Hint: "tried earlier", Group: group})
 	}
@@ -213,7 +204,7 @@ func (w *wizard) modelActions(k int) *nested {
 			}
 			switch vals[0] {
 			case "model":
-				w.insertAfterCurrent(w.stepModel(k), w.stepEffort(k), w.stepChain())
+				w.insertAfterCurrent(w.stepModel(k), w.stepChain())
 			case "up":
 				w.cfg.Engines[k-1], w.cfg.Engines[k] = w.cfg.Engines[k], w.cfg.Engines[k-1]
 				w.chainLast = fmt.Sprintf("e%d", k-1)
@@ -238,4 +229,12 @@ func (w *wizard) modelActions(k int) *nested {
 			return nil
 		},
 	}
+}
+
+// modelSummary names the model, or the models per size when the engine has them.
+func modelSummary(e engine.Spec) string {
+	if t := e.Tiers; t.Light != "" || t.Heavy != "" {
+		return fmt.Sprintf("by size: %s / %s / %s", orDefault(t.Light), orDefault(t.Medium), orDefault(t.Heavy))
+	}
+	return orDefault(e.Model)
 }

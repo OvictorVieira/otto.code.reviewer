@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/complexity"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/diff"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
@@ -23,6 +24,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/slice"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/update"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/workspace"
@@ -71,7 +73,12 @@ type App struct {
 	Out       io.Writer
 	Host      Host
 	Checkouts Checkouts
-	Feedback  Feedback    // nil disables learning
+	Feedback  Feedback  // nil disables learning
+	CI        ci.Reader // nil skips the CI evidence
+	// Issues reads issues the description links to, so they become part of the spec. Nil skips them.
+	Issues IssueReader
+	// Levels lists the effort levels a model accepts. Nil uses the engine's general list.
+	Levels    func(engineName, model string) []string
 	Learn     learn.Store // where Otto keeps what it learned, per repository
 	learnMu   sync.Mutex
 	learnBusy int32
@@ -123,6 +130,9 @@ func New(out io.Writer) (*App, error) {
 		Host:        github.CLI{},
 		Checkouts:   gitCheckouts{},
 		Feedback:    github.CLI{},
+		CI:          github.CLI{},
+		Issues:      github.CLI{},
+		Levels:      engine.CachedLevels(),
 		Learn:       learn.Store{Dir: filepath.Join(dir, "learning")},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
 		Installed:   engine.Installed,
@@ -200,69 +210,71 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	}
 	defer wt.Remove()
 
+	size, instructions := a.assess(wt.Dir(), rawDiff, opt.Instructions)
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: size %s", repo, number, size.Summary()), fmt.Sprintf("Tamanho do PR: %s", size.Tier))
+	opt.Instructions = instructions
+
 	lessons, prior := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
-	prompt, err := review.BuildPrompt(review.PromptInput{
+	ciEvidence := a.ciEvidence(ctx, repo, number, pr.HeadRefOid, opt)
+	in := review.PromptInput{
 		Repo: repo, URL: pr.URL, Title: pr.Title, Body: pr.Body, Base: pr.BaseRefName, HeadSHA: pr.HeadRefOid,
-		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions, Verify: a.Cfg.Verify,
-		Lessons: lessons, Prior: prior,
-	})
-	if err != nil {
-		return Report{}, err
+		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions,
+		Lessons: lessons, Prior: prior, CI: ciEvidence, Issues: a.linkedIssues(ctx, repo, number, pr.Body),
 	}
 	a.reviewStatus(opt, fmt.Sprintf("%s#%d: preparing review instructions for %d changed files", repo, number, len(d.Files())),
 		fmt.Sprintf("Preparando análise de %d arquivos…", len(d.Files())))
 
-	pool, err := a.pool(opt.Engine, opt)
-	if err != nil {
-		return Report{}, err
-	}
-	scratch, err := os.CreateTemp("", "otto-answer-*.txt")
-	if err != nil {
-		return Report{}, err
-	}
-	scratch.Close()
-	defer os.Remove(scratch.Name())
-
-	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s, verify %v)", repo, number, pool.Strategy, a.Cfg.Verify),
-		"Preparando revisão…")
-	accept := func(out string) error { _, err := review.ParseResult(out, wt.Dir()); return err }
-	var progress func(string)
-	if opt.ShowProgress && opt.Progress != nil {
-		progress = opt.Progress
-	}
-	outcome, err := pool.Run(ctx, engine.Request{
-		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify, Progress: progress,
-		Contract: review.OutputContract(),
-	}, a.rotation(), accept)
-	if !opt.ShowProgress {
-		for _, f := range outcome.Failures {
-			a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
+	meta := format.Meta{Trigger: a.Cfg.Trigger, Size: size.Summary()}
+	var result review.Result
+	if parts := slice.Plan(diff.Stats(rawDiff)); len(parts) > 1 {
+		r, err := a.reviewInParts(ctx, repo, number, wt.Dir(), in, parts, size.Tier, opt)
+		if err != nil {
+			return Report{}, err
 		}
-	}
-	if err != nil {
-		if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
-			a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
-			post := a.postContext(ctx, repo, opt)
-			if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
-				return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
+		result = r.result
+		meta.Engine, meta.Parts, meta.Unreviewed, meta.IntegrationSkipped = r.engines, len(parts), r.unreviewed, r.integrationSkipped
+	} else {
+		pool, err := a.pool(opt.Engine, opt, size.Tier)
+		if err != nil {
+			return Report{}, err
+		}
+		a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s)", repo, number, pool.Strategy),
+			"Preparando revisão…")
+		var progress func(string)
+		if opt.ShowProgress && opt.Progress != nil {
+			progress = opt.Progress
+		}
+		outcome, err := a.runReview(ctx, pool, in, wt.Dir(), a.rotation(), progress)
+		if !opt.ShowProgress {
+			for _, f := range outcome.Failures {
+				a.logf("%s#%d: engine failed, falling back: %s", repo, number, f)
 			}
 		}
-		return Report{}, err
-	}
-	if opt.Engine == "" {
-		a.setRotation(outcome.Next)
+		if err != nil {
+			if opt.PostQuotaFailure && !opt.DryRun && errors.Is(err, engine.ErrQuotaExceeded) {
+				a.reviewStatus(opt, "", "Limite de uso atingido; publicando aviso no pull request…")
+				post := a.postContext(ctx, repo, opt)
+				if postErr := a.Host.Comment(post, repo, number, format.QuotaFailure(err)); postErr != nil {
+					return Report{}, fmt.Errorf("%w (also failed to post quota notice: %v)", err, postErr)
+				}
+			}
+			return Report{}, err
+		}
+		if opt.Engine == "" {
+			a.setRotation(outcome.Next)
+		}
+		result, _ = review.ParseResult(outcome.Output, wt.Dir())
+		spec := pool.spec(outcome.Index)
+		meta.Engine, meta.Model, meta.Effort = spec.Name, spec.Model, spec.Effort
 	}
 
-	result, _ := review.ParseResult(outcome.Output, wt.Dir())
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
-	spec := pool.spec(outcome.Index)
-	meta := format.Meta{Engine: spec.Name, Model: spec.Model, Effort: spec.Effort, Trigger: a.Cfg.Trigger}
 	if opt.PostToken != "" || opt.RefreshPostToken {
 		meta.Requester = opt.Requester
 	}
 	post := a.postContext(ctx, repo, opt)
 	payload := format.Payload(pr.HeadRefOid, placement, result, meta)
-	report := Report{Engine: spec.Name, Findings: len(placement.Inline) + len(placement.Outside)}
+	report := Report{Engine: meta.Engine, Findings: len(placement.Inline) + len(placement.Outside)}
 
 	if opt.DryRun {
 		finishProgress()
@@ -291,9 +303,9 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	report.Posted = true
 	finishProgress()
 	if opt.ShowProgress {
-		fmt.Fprintf(a.Out, "Otto Review: %d finding(s) · %s · posted\n", report.Findings, spec.Name)
+		fmt.Fprintf(a.Out, "Otto Review: %d finding(s) · %s · posted\n", report.Findings, report.Engine)
 	} else {
-		a.logf("%s#%d: posted review with %d findings (engine %s)", repo, number, report.Findings, spec.Name)
+		a.logf("%s#%d: posted review with %d findings (engine %s)", repo, number, report.Findings, report.Engine)
 	}
 	return report, nil
 }
@@ -331,7 +343,8 @@ type pool struct {
 
 func (p pool) spec(i int) engine.Spec { return p.specs[i] }
 
-func (a *App) pool(only string, opt Options) (pool, error) {
+// pool lists the engines to try, each resolved for the size of the pull request (model and effort).
+func (a *App) pool(only string, opt Options, tier engine.Tier) (pool, error) {
 	var p pool
 	p.Strategy = a.Cfg.Strategy
 	p.AttemptTimeout = a.Cfg.EngineTimeout
@@ -345,6 +358,7 @@ func (a *App) pool(only string, opt Options) (pool, error) {
 				fmt.Sprintf("Ignorando %s: não está instalado…", s.Name))
 			continue
 		}
+		s = a.forTier(s, tier)
 		p.Engines = append(p.Engines, a.NewEngine(s))
 		p.specs = append(p.specs, s)
 		p.Labels = append(p.Labels, specLabel(s))
@@ -589,4 +603,104 @@ func specLabel(s engine.Spec) string {
 		label += " · " + s.Effort
 	}
 	return label
+}
+
+// ciEvidence reads the pull request's CI results on the reviewed commit, waiting a while for checks
+// still running. It never blocks a review: when CI cannot be read the review goes on without it.
+func (a *App) ciEvidence(ctx context.Context, repo string, number int, sha string, opt Options) string {
+	if a.CI == nil {
+		return ""
+	}
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reading CI results of %s", repo, number, short(sha)), "Lendo resultados do CI…")
+	rep, err := ci.Collect(ctx, a.CI, repo, sha, ci.Options{Wait: a.Cfg.CIWait})
+	if err != nil {
+		a.logf("%s#%d: reading CI results failed, reviewing without them: %v", repo, number, err)
+		return ""
+	}
+	if rep.Pending {
+		a.logf("%s#%d: CI still running after %s; reviewing anyway", repo, number, a.Cfg.CIWait)
+	}
+	return ci.Render(rep)
+}
+
+// sizeWords lets a reviewer force the size by starting the request with it, e.g. "@otto-assist review heavy".
+var sizeWords = map[string]engine.Tier{
+	"light": engine.Light, "leve": engine.Light,
+	"medium": engine.Medium, "medio": engine.Medium, "médio": engine.Medium,
+	"heavy": engine.Heavy, "pesado": engine.Heavy,
+}
+
+// assess sizes the pull request. A size word at the start of the request's instructions wins and
+// is removed from them.
+func (a *App) assess(dir, rawDiff, instructions string) (complexity.Assessment, string) {
+	cfg, err := complexity.LoadConfig(dir)
+	if err != nil {
+		a.logf("reading .otto.yml failed, using the default sensitive paths: %v", err)
+	}
+	size := complexity.Assess(diff.Stats(rawDiff), cfg.Sensitive)
+	if fields := strings.Fields(instructions); len(fields) > 0 {
+		if t, ok := sizeWords[strings.ToLower(fields[0])]; ok {
+			size.Tier = t
+			size.Reasons = append(size.Reasons, "size asked for in the request")
+			instructions = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(instructions), fields[0]))
+		}
+	}
+	return size, instructions
+}
+
+// forTier resolves an engine's model and effort for the size of the pull request.
+func (a *App) forTier(s engine.Spec, tier engine.Tier) engine.Spec {
+	model := s.Model
+	if m := s.Tiers.For(tier); m != "" {
+		model = m
+	}
+	levels := engine.Efforts(s.Name)
+	if a.Levels != nil {
+		levels = a.Levels(s.Name, model)
+	}
+	return s.ForTier(tier, levels)
+}
+
+// IssueReader reads one issue.
+type IssueReader interface {
+	Issue(ctx context.Context, repo string, number int) (title, body string, err error)
+}
+
+// issueRef finds "#12", "owner/repo#12" or "Closes #12" in a description.
+var issueRef = regexp.MustCompile(`(?:^|[\s(\[])(?:([\w.-]+/[\w.-]+))?#(\d+)\b`)
+
+// maxLinkedIssues and maxIssueBytes keep the spec from crowding out the diff.
+const (
+	maxLinkedIssues = 3
+	maxIssueBytes   = 4000
+)
+
+// linkedIssues reads the issues of this repository that the description mentions. Engines no
+// longer have a shell to read them, so Otto hands them over as part of the spec.
+func (a *App) linkedIssues(ctx context.Context, repo string, number int, body string) string {
+	if a.Issues == nil {
+		return ""
+	}
+	var b strings.Builder
+	seen := map[int]bool{number: true}
+	for _, m := range issueRef.FindAllStringSubmatch(body, -1) {
+		if m[1] != "" && !strings.EqualFold(m[1], repo) {
+			continue // another repository: not read
+		}
+		n, _ := strconv.Atoi(m[2])
+		if seen[n] || len(seen) > maxLinkedIssues {
+			continue
+		}
+		seen[n] = true
+		title, text, err := a.Issues.Issue(ctx, repo, n)
+		if err != nil {
+			a.logf("%s#%d: reading linked issue #%d failed: %v", repo, number, n, err)
+			continue
+		}
+		if len(text) > maxIssueBytes {
+			text = text[:maxIssueBytes] + "\n…(cut)"
+		}
+		fmt.Fprintf(&b, "### #%d %s\n\n%s\n\n", n, title, strings.TrimSpace(text))
+	}
+	return strings.TrimSpace(b.String())
 }

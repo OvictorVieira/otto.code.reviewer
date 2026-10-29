@@ -20,9 +20,76 @@ import (
 
 // Spec is one configured engine.
 type Spec struct {
-	Name   string `yaml:"name"`
-	Model  string `yaml:"model,omitempty"`  // empty = CLI default
-	Effort string `yaml:"effort,omitempty"` // empty = CLI default
+	Name  string `yaml:"name"`
+	Model string `yaml:"model,omitempty"` // empty = CLI default
+	// Effort is not configured: Otto resolves it for each review from the size of the pull request.
+	Effort string `yaml:"-"`
+	// Tiers optionally names a model per size of pull request; an empty size uses Model.
+	Tiers TierModels `yaml:"tiers,omitempty"`
+}
+
+// TierModels names the model to use for each size of pull request.
+type TierModels struct {
+	Light  string `yaml:"light,omitempty"`
+	Medium string `yaml:"medium,omitempty"`
+	Heavy  string `yaml:"heavy,omitempty"`
+}
+
+// tierEffort is the effort each size of pull request asks for.
+var tierEffort = map[Tier]string{Light: "low", Medium: "medium", Heavy: "high"}
+
+// effortScale orders every effort name engines use, from least to most thinking.
+var effortScale = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// ForTier resolves the model and effort this engine uses for a pull request of the given size.
+// A model named for that size wins over the default model. The effort is the level the model
+// accepts that is closest to what the size asks for (the lower one on a tie: faster and cheaper).
+func (s Spec) ForTier(t Tier, levels []string) Spec {
+	out := Spec{Name: s.Name, Model: s.Model, Tiers: s.Tiers}
+	if m := s.Tiers.For(t); m != "" {
+		out.Model = m
+	}
+	out.Effort = closestEffort(tierEffort[t], levels)
+	return out
+}
+
+// For returns the model named for size t, or "".
+func (m TierModels) For(t Tier) string {
+	switch t {
+	case Light:
+		return m.Light
+	case Medium:
+		return m.Medium
+	case Heavy:
+		return m.Heavy
+	}
+	return ""
+}
+
+func closestEffort(want string, levels []string) string {
+	idx := func(l string) int {
+		for i, e := range effortScale {
+			if e == l {
+				return i
+			}
+		}
+		return -1
+	}
+	w, best, bestDist := idx(want), "", 1<<30
+	for _, l := range levels {
+		i := idx(l)
+		if i < 0 {
+			continue
+		}
+		d := i - w
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDist || (d == bestDist && i < idx(best)) {
+			best, bestDist = l, d
+		}
+	}
+	return best
 }
 
 // Request is one review run.
@@ -30,7 +97,6 @@ type Request struct {
 	Prompt   string
 	Dir      string // disposable checkout of the pull request head
 	OutFile  string // scratch file the engine may write its answer to
-	Verify   bool   // allow running commands (install, test, start) inside Dir
 	Progress func(string)
 	// Followup, when set, continues the engine's last session in Dir with this message instead of
 	// starting over: used to ask for the answer an engine finished its work without giving.
@@ -66,12 +132,13 @@ type Command struct {
 	Args       []string
 	Dir        string
 	Stdin      string
-	OutputFile string // read after the run when set (codex)
+	OutputFile string   // read after the run when set (codex)
+	Env        []string // extra environment variables, on top of Otto's own
 }
 
-// BuildCommand maps a spec to the CLI flags of each tool. With Verify the
-// engine may run commands inside the disposable checkout; file-editing tools
-// stay disabled either way and the prompt forbids commits and pushes.
+// BuildCommand maps a spec to the CLI flags of each tool. Reviews only read the code: every engine
+// runs in its read-only or plan mode, with file-editing tools disabled, and the prompt forbids
+// commits and pushes. Otto never runs the project; CI results are its evidence of behavior.
 func BuildCommand(s Spec, req Request) (Command, error) {
 	c := Command{Bin: Binary(s.Name), Dir: req.Dir}
 	switch s.Name {
@@ -84,20 +151,15 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		if s.Effort != "" {
 			c.Args = append(c.Args, "--effort", s.Effort)
 		}
-		if req.Verify {
-			c.Args = append(c.Args, "--allowedTools", "Read", "Grep", "Glob", "Bash")
-		} else {
-			c.Args = append(c.Args, "--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)")
-		}
-		c.Args = append(c.Args, "--disallowedTools", "Edit", "Write", "NotebookEdit")
+		// Reading is confined to the checkout, and settings a pull request could ship in the repository
+		// (.claude/settings.json) are ignored: only the user's own settings apply.
+		c.Args = append(c.Args, "--setting-sources", "user",
+			"--allowedTools", "Read(./**)", "Grep(./**)", "Glob(./**)",
+			"--disallowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch")
 	case "codex":
 		c.Stdin = req.Prompt
 		c.OutputFile = req.OutFile
-		if req.Verify {
-			c.Args = []string{"exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"}
-		} else {
-			c.Args = []string{"exec", "-s", "read-only"}
-		}
+		c.Args = []string{"exec", "-s", "read-only"}
 		c.Args = append(c.Args, "-o", req.OutFile)
 		if s.Model != "" {
 			c.Args = append(c.Args, "-m", s.Model)
@@ -109,11 +171,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 	case "cursor":
 		// Cursor has no effort flag: reasoning depth comes with the model name.
 		c.Args = []string{"-p", "--output-format", "json", "--trust", "--workspace", req.Dir}
-		if req.Verify {
-			c.Args = append(c.Args, "--force")
-		} else {
-			c.Args = append(c.Args, "--mode", "plan")
-		}
+		c.Args = append(c.Args, "--mode", "plan")
 		if s.Model != "" {
 			c.Args = append(c.Args, "--model", s.Model)
 		}
@@ -122,11 +180,8 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		// The prompt goes on stdin: attaching a large file with -f makes opencode stall before it
 		// reaches the model, while the same text on stdin is answered in seconds.
 		c.Stdin = req.Prompt
-		if req.Verify {
-			c.Args = []string{"run", "--auto"}
-		} else {
-			c.Args = []string{"run", "--agent", "plan"}
-		}
+		c.Env = []string{"OPENCODE_CONFIG_CONTENT=" + opencodeLockdown()}
+		c.Args = []string{"run", "--agent", "plan"}
 		c.Args = append(c.Args, "--dir", req.Dir)
 		if s.Model != "" {
 			c.Args = append(c.Args, "-m", s.Model)
@@ -135,9 +190,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 			c.Args = append(c.Args, "--variant", s.Effort)
 		}
 		if req.Followup != "" {
-			c.Stdin = ""
-			c.Args = append(c.Args, "--continue", "--", req.Followup)
-			break
+			return Command{}, fmt.Errorf("opencode follow-up requires a pinned session ID")
 		}
 		c.Args = append(c.Args, "--",
 			"Follow the code review instructions in the input exactly and answer only with the JSON it asks for.")
@@ -149,9 +202,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 			"--deny-tool=shell(git commit)", "--deny-tool=shell(git push)",
 			"--disable-builtin-mcps", "--no-color",
 		}
-		if !req.Verify {
-			c.Args = append(c.Args, "--deny-tool=shell")
-		}
+		c.Args = append(c.Args, "--deny-tool=shell")
 		if s.Model != "" {
 			c.Args = append(c.Args, "--model", s.Model)
 		}
@@ -200,8 +251,9 @@ type CLI struct{ Spec Spec }
 // Name implements Engine.
 func (e CLI) Name() string { return e.Spec.Name }
 
-// CanContinue implements Continuer: opencode keeps the session, so a follow-up costs a moment.
-func (e CLI) CanContinue() bool { return e.Spec.Name == "opencode" }
+// CanContinue is false until OpenCode follow-ups can pin the session created by this review.
+// Continuing the latest session in a shared checkout can resume another parallel review.
+func (e CLI) CanContinue() bool { return false }
 
 // Run implements Engine.
 func (e CLI) Run(ctx context.Context, req Request) (string, error) {
@@ -231,6 +283,9 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 		return "", err
 	}
 	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
+	if len(c.Env) > 0 {
+		cmd.Env = append(os.Environ(), c.Env...)
+	}
 	isolate(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -399,6 +454,8 @@ var (
 	ansiColors   = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	retryNotice  = regexp.MustCompile(`(?i)\b(retry|retrying|reconnecting)\b[^\n]*attempt\s+\d+`)
 	opencodeFail = regexp.MustCompile(`^Error:`)
+	// A tool call Otto's lockdown refused is reported as an error, but the model carries on without it.
+	permissionRefusal = regexp.MustCompile(`(?i)rule which prevents you|rejected permission|auto-rejecting|permission denied`)
 )
 
 // stuckSignal reads one line an engine wrote to stderr and says why the engine should be
@@ -406,7 +463,7 @@ var (
 // retrying until the session is released, which would hold the review for the whole timeout.
 func stuckSignal(bin, line string, retryNotices *int) string {
 	line = strings.TrimSpace(ansiColors.ReplaceAllString(line, ""))
-	if bin == "opencode" && opencodeFail.MatchString(line) {
+	if bin == "opencode" && opencodeFail.MatchString(line) && !permissionRefusal.MatchString(line) {
 		return "reported an error"
 	}
 	if retryNotice.MatchString(line) && !strings.ContainsAny(line, "{};=<>") {

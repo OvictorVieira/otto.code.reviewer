@@ -26,8 +26,11 @@ import (
 
 const (
 	cliDefault = ""
-	allRepos   = "\x00all"
-	typeModel  = "\x00type"
+	// tiersFree and tiersPaid pick the recommended model for each size of pull request.
+	tiersFree = "\x00tiers-free"
+	tiersPaid = "\x00tiers-paid"
+	allRepos  = "\x00all"
+	typeModel = "\x00type"
 )
 
 // ui is a screen the wizard can show: a list, a text field or a notice.
@@ -324,12 +327,12 @@ func (w *wizard) stepEngines() step {
 func (w *wizard) engineSteps() []step {
 	var s []step
 	for i := range w.cfg.Engines {
-		s = append(s, w.stepModel(i), w.stepEffort(i))
+		s = append(s, w.stepModel(i))
 	}
 	if len(w.cfg.Engines) > 1 {
 		s = append(s, w.stepStrategy())
 	}
-	return append(s, w.stepVerify(), w.stepLanguage(), w.stepIdentity(), w.stepService())
+	return append(s, w.stepLanguage(), w.stepIdentity(), w.stepService())
 }
 
 func (w *wizard) stepModel(i int) step {
@@ -346,7 +349,21 @@ func (w *wizard) stepModel(i int) step {
 			spec := &w.cfg.Engines[i]
 			catalog := w.catalogs[spec.Name]
 
-			items := []picker.Item{{Value: cliDefault, Title: "CLI default", Hint: "whatever " + spec.Name + " is set to use", Group: "Default"}}
+			var items []picker.Item
+			for _, free := range []bool{true, false} {
+				_, ok := engine.RecommendedTiers(spec.Name, free)
+				if !ok {
+					continue
+				}
+				title, value := "Recommended for each size", tiersPaid
+				if free {
+					title, value = "Recommended free models for each size", tiersFree
+				}
+				// The hint names no model, so typing a model's name never lands on this row.
+				items = append(items, picker.Item{Value: value, Title: title, Group: "By pull request size",
+					Hint: "a lighter model for small changes, a stronger one for large or risky ones"})
+			}
+			items = append(items, picker.Item{Value: cliDefault, Title: "CLI default", Hint: "whatever " + spec.Name + " is set to use", Group: "Default"})
 			free, known := 0, false
 			for _, m := range catalog {
 				hint := m.Note
@@ -377,10 +394,12 @@ func (w *wizard) stepModel(i int) step {
 			}
 
 			set := func(model string) {
-				if model != spec.Model {
-					spec.Effort = "" // the old effort may not exist for the new model
+				if model == tiersFree || model == tiersPaid {
+					spec.Tiers, _ = engine.RecommendedTiers(spec.Name, model == tiersFree)
+					spec.Model = spec.Tiers.Medium
+					return
 				}
-				spec.Model = model
+				spec.Model, spec.Tiers = model, engine.TierModels{}
 			}
 			m := picker.New(picker.Options{Title: spec.Name + " · select model", Items: items, Selected: spec.Model, Footer: footer})
 			return m, func(vals []string) *nested {
@@ -400,32 +419,6 @@ func (w *wizard) stepModel(i int) step {
 	}
 }
 
-func (w *wizard) stepEffort(i int) step {
-	return step{show: func() (ui, func([]string) *nested) {
-		spec := &w.cfg.Engines[i]
-		levels := w.deps.Efforts(spec.Name)
-		for _, m := range w.catalogs[spec.Name] {
-			if m.ID == spec.Model {
-				levels = m.Efforts
-			}
-		}
-		if len(levels) == 0 {
-			spec.Effort = ""
-			return nil, nil
-		}
-		items := []picker.Item{{Value: cliDefault, Title: "Default", Hint: "the CLI's default effort"}}
-		for _, l := range levels {
-			items = append(items, picker.Item{Value: l, Title: l})
-		}
-		current := spec.Effort
-		if !slices.Contains(levels, current) {
-			current = cliDefault
-		}
-		return choice(fmt.Sprintf("%s · select effort for %s", spec.Name, orDefault(spec.Model)), items, current,
-			fmt.Sprintf("%d levels", len(levels)), func(v string) { spec.Effort = v })
-	}}
-}
-
 func (w *wizard) stepStrategy() step {
 	return step{show: func() (ui, func([]string) *nested) {
 		items := []picker.Item{
@@ -434,20 +427,6 @@ func (w *wizard) stepStrategy() step {
 		}
 		return choice("When more than one engine is configured", items, string(w.cfg.Strategy), "",
 			func(v string) { w.cfg.Strategy = engine.Strategy(v) })
-	}}
-}
-
-func (w *wizard) stepVerify() step {
-	return step{show: func() (ui, func([]string) *nested) {
-		items := []picker.Item{
-			{Value: "yes", Title: "Run the project", Hint: "install, build, run tests and probe scenarios in a disposable worktree (recommended)", Group: "Reviews"},
-			{Value: "no", Title: "Only read the code", Hint: "safer for repositories with outside contributors", Group: "Reviews"},
-		}
-		cur := "no"
-		if w.cfg.Verify {
-			cur = "yes"
-		}
-		return choice("Should reviews run the project?", items, cur, "", func(v string) { w.cfg.Verify = v == "yes" })
 	}}
 }
 
@@ -634,12 +613,12 @@ func Run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintf(out, "  watching   %d repositories\n", len(w.cfg.Repos.Selected))
 	}
 	for _, e := range w.cfg.Engines {
-		fmt.Fprintf(out, "  engine     %-9s model %s · effort %s\n", e.Name, orDefault(e.Model), orDefault(e.Effort))
+		fmt.Fprintf(out, "  engine     %-9s model %s · effort auto (by pull request size)\n", e.Name, orDefault(e.Model))
 	}
 	if len(w.cfg.Engines) > 1 {
 		fmt.Fprintf(out, "  strategy   %s\n", w.cfg.Strategy)
 	}
-	fmt.Fprintf(out, "  verify     %v\n  language   %s\n", w.cfg.Verify, w.cfg.Language)
+	fmt.Fprintf(out, "  language   %s\n", w.cfg.Language)
 	if w.cfg.App.ID != 0 {
 		fmt.Fprintf(out, "  posts as   GitHub App %d for `%s`\n", w.cfg.App.ID, w.cfg.Trigger)
 	} else {

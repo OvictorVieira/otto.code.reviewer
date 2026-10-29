@@ -27,18 +27,25 @@ var tierDescription = map[Tier]string{
 //   - the same Anthropic trio is what opencode (through OpenRouter), cursor and copilot offer under
 //     their own ids, so those engines get the same three picks.
 //   - codex lists no sizes and no prices; gpt-6-luna, the model Otto used first, is the one pick.
-//   - opencode's free Zen models are not recommended: deepseek-v4.1-flash-free took 8 to 11 minutes,
-//     wrote a plan asking for confirmation instead of the answer, and broke the JSON format.
+//   - free models for opencode come from `otto eval models` (2026-10-29): a pull request with three planted
+//     bugs (a race, an ignored error, a division by zero) reviewed with Otto's real prompt. Picked if the
+//     answer was valid JSON, found all three bugs and took under three minutes: north-mini-code (33s),
+//     big-pickle (40s, 4 findings) and inkling (51s, 5 findings, the most thorough). deepseek-v4.1-flash-free,
+//     glm-5.3, mimo-v2.6, flint-40b and the nemotron-3.5 Zen models did not answer within four minutes.
+//     Free tiers are rationed by the provider (OpenRouter: ~50 requests a day without credits), so they are
+//     good picks while available but must never be a configuration's only engine.
 var recommended = []struct {
 	engine string
 	tier   Tier
 	id     string
+	free   bool
 }{
-	{"claude", Light, "haiku"}, {"claude", Medium, "sonnet"}, {"claude", Heavy, "opus"},
-	{"codex", Medium, "gpt-6-luna"},
-	{"cursor", Light, "claude-haiku-5-5-medium"}, {"cursor", Medium, "claude-sonnet-5-5-high"}, {"cursor", Heavy, "claude-opus-5-5-high"},
-	{"opencode", Light, "openrouter/anthropic/claude-haiku-5.5"}, {"opencode", Medium, "openrouter/anthropic/claude-sonnet-5.5"}, {"opencode", Heavy, "openrouter/anthropic/claude-opus-5.5"},
-	{"copilot", Light, "claude-haiku-5.5"}, {"copilot", Medium, "claude-sonnet-5.5"}, {"copilot", Heavy, "claude-opus-5.5"},
+	{"claude", Light, "haiku", false}, {"claude", Medium, "sonnet", false}, {"claude", Heavy, "opus", false},
+	{"codex", Medium, "gpt-6-luna", false},
+	{"cursor", Light, "claude-haiku-5-5-medium", false}, {"cursor", Medium, "claude-sonnet-5-5-high", false}, {"cursor", Heavy, "claude-opus-5-5-high", false},
+	{"opencode", Light, "openrouter/anthropic/claude-haiku-5.5", false}, {"opencode", Medium, "openrouter/anthropic/claude-sonnet-5.5", false}, {"opencode", Heavy, "openrouter/anthropic/claude-opus-5.5", false},
+	{"opencode", Light, "openrouter/cohere/north-mini-code:free", true}, {"opencode", Medium, "opencode/big-pickle", true}, {"opencode", Heavy, "openrouter/thinkingmachines/inkling:free", true},
+	{"copilot", Light, "claude-haiku-5.5", false}, {"copilot", Medium, "claude-sonnet-5.5", false}, {"copilot", Heavy, "claude-opus-5.5", false},
 }
 
 // RecommendedTier says which size of review the model is recommended for, if it is.
@@ -49,4 +56,34 @@ func RecommendedTier(engineName, id string) (Tier, bool) {
 		}
 	}
 	return "", false
+}
+
+// RecommendedTiers returns the recommended model for each size of pull request, from the free
+// picks or the paid ones. ok is false when the engine has no full set.
+func RecommendedTiers(engineName string, free bool) (TierModels, bool) {
+	var t TierModels
+	for _, r := range recommended {
+		if r.engine != engineName || r.free != free {
+			continue
+		}
+		switch r.tier {
+		case Light:
+			t.Light = r.id
+		case Medium:
+			t.Medium = r.id
+		case Heavy:
+			t.Heavy = r.id
+		}
+	}
+	return t, t.Light != "" && t.Medium != "" && t.Heavy != ""
+}
+
+// RecommendedFree reports whether a recommended model is one of the free picks.
+func RecommendedFree(engineName, id string) bool {
+	for _, r := range recommended {
+		if r.engine == engineName && r.id == id {
+			return r.free
+		}
+	}
+	return false
 }

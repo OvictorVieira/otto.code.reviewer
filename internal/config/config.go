@@ -35,7 +35,6 @@ type Config struct {
 	App            GitHubApp       `yaml:"github_app,omitempty"`
 	Strategy       engine.Strategy `yaml:"strategy"`
 	Engines        []engine.Spec   `yaml:"engines"`
-	Verify         bool            `yaml:"verify"`
 	MinConfidence  float64         `yaml:"min_confidence"`
 	PollInterval   time.Duration   `yaml:"poll_interval"`
 	Lookback       time.Duration   `yaml:"lookback"`
@@ -43,6 +42,8 @@ type Config struct {
 	// EngineTimeout caps one engine's attempt so a hung engine falls back to the next. Zero
 	// splits the remaining review time between the engines still waiting.
 	EngineTimeout time.Duration `yaml:"engine_timeout"`
+	// CIWait is how long a review waits for the pull request's CI checks still running.
+	CIWait time.Duration `yaml:"ci_wait"`
 	// Learning makes Otto read how maintainers react to its findings (reactions, replies,
 	// resolved threads) and apply what it learns in later reviews.
 	Learning bool `yaml:"learning"`
@@ -54,12 +55,12 @@ func Default() Config {
 		Trigger:       "/otto review",
 		Language:      "English",
 		Strategy:      engine.RoundRobin,
-		Verify:        true,
 		MinConfidence: 0.3,
 		PollInterval:  60 * time.Second,
 		Lookback:      24 * time.Hour,
 		Timeout:       30 * time.Minute,
 		Learning:      true,
+		CIWait:        10 * time.Minute,
 	}
 }
 

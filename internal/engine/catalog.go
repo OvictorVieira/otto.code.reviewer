@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -338,4 +339,27 @@ func parseOpencode(out string) []Model {
 		return models[i].ID < models[j].ID
 	})
 	return models
+}
+
+// CachedLevels returns a lookup of the effort levels a model accepts, reading each engine's model
+// list at most once an hour. Models the list does not describe fall back to the engine's levels.
+func CachedLevels() func(engineName, model string) []string {
+	var mu sync.Mutex
+	cache := map[string][]Model{}
+	read := map[string]time.Time{}
+	return func(engineName, model string) []string {
+		mu.Lock()
+		defer mu.Unlock()
+		if engineName == "opencode" && model != "" {
+			if time.Since(read[engineName]) > time.Hour {
+				cache[engineName], read[engineName] = catalog(engineName), time.Now()
+			}
+			for _, m := range cache[engineName] {
+				if m.ID == model && len(m.Efforts) > 0 {
+					return m.Efforts
+				}
+			}
+		}
+		return Efforts(engineName)
+	}
 }

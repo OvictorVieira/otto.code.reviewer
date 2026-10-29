@@ -58,6 +58,7 @@ type fakeHost struct {
 	plain       []string
 	reactions   []reaction
 	writes      []write
+	diff        string // overrides the default one-file diff
 }
 
 func (h *fakeHost) Login(context.Context) (string, error) { return "OvictorVieira", nil }
@@ -65,8 +66,13 @@ func (h *fakeHost) GetPR(_ context.Context, _ string, n int) (github.PR, error) 
 	return github.PR{Number: n, Title: "feat: reserve stock", Body: "Closes #7", URL: "https://github.com/" + repo + "/pull/1",
 		BaseRefName: "main", HeadRefOid: "abc1234567890"}, nil
 }
-func (h *fakeHost) Diff(context.Context, string, int) (string, error) { return prDiff, nil }
-func (h *fakeHost) Repos(context.Context) ([]string, error)           { return []string{repo}, nil }
+func (h *fakeHost) Diff(context.Context, string, int) (string, error) {
+	if h.diff != "" {
+		return h.diff, nil
+	}
+	return prDiff, nil
+}
+func (h *fakeHost) Repos(context.Context) ([]string, error) { return []string{repo}, nil }
 func (h *fakeHost) PostReview(ctx context.Context, _ string, _ int, payload any) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -204,7 +210,7 @@ func TestReviewPostsInlineFindingWithEngineLabelAndRemovesCheckout(t *testing.T)
 	if !strings.Contains(r.Comments[0].Body, "P1-orange") || !strings.Contains(r.Body, "`claude` · model `m-claude`") {
 		t.Errorf("review body or badge wrong:\n%s\n%s", r.Body, r.Comments[0].Body)
 	}
-	if got.Dir != "/tmp/otto-wt" || !got.Verify || !strings.Contains(got.Prompt, "feat: reserve stock") {
+	if got.Dir != "/tmp/otto-wt" || !strings.Contains(got.Prompt, "feat: reserve stock") {
 		t.Errorf("engine request = %+v", got)
 	}
 	if h.checkouts.prepared != 1 || h.checkouts.removed != 1 {

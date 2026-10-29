@@ -61,23 +61,43 @@ func Pending(comments []Comment, phrase string, allowed []string, done func(int6
 // matchTrigger looks for a line that starts with the trigger phrase, anywhere in
 // the comment, so a review can be asked for after a few words of context. Lines
 // inside fenced code blocks never count, and neither do quoted lines or a phrase
-// in the middle of a sentence.
+// in the middle of a sentence. The phrase may be wrapped in markdown emphasis or
+// code (**…**, `…`) and followed by ":" or "-". Text after it on the same line is
+// the instructions; when the line holds only the phrase, the lines below it are.
 func matchTrigger(body, phrase string) (string, bool) {
 	inFence := false
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
 			inFence = !inFence
 			continue
 		}
-		if inFence || !strings.HasPrefix(strings.ToLower(line), phrase) {
+		if inFence {
 			continue
 		}
-		rest := line[len(phrase):]
-		if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
+		bare := strings.TrimLeft(line, "*_`")
+		if !strings.HasPrefix(strings.ToLower(bare), phrase) {
+			continue
+		}
+		rest := strings.TrimLeft(bare[len(phrase):], "*_`")
+		if rest != "" && !strings.ContainsRune(" \t:-–—,", []rune(rest)[0]) {
 			continue // "/otto reviewer" is not the trigger
 		}
-		return strings.TrimSpace(rest), true
+		rest = strings.TrimSpace(strings.TrimLeft(rest, " \t:-–—,"))
+		if rest != "" {
+			return rest, true
+		}
+		return following(lines[i+1:]), true
 	}
 	return "", false
+}
+
+// following is the text written under a trigger line that has nothing after it.
+func following(lines []string) string {
+	var out []string
+	for _, l := range lines {
+		out = append(out, strings.TrimRight(l, " \t"))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }

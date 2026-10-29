@@ -115,6 +115,11 @@ func TestTriggerOnItsOwnLineAfterOtherText(t *testing.T) {
 		{"mentioned in the middle of a sentence", "Fixed. Please /otto review again", false, ""},
 		{"similar word on a later line", "Done.\n/otto reviewer", false, ""},
 		{"after a closed code block", "```\ncode\n```\n/otto review", true, ""},
+		{"text on the lines below a bare trigger", "/otto review\nFoque em concorrência.\nE em erros ignorados.", true, "Foque em concorrência.\nE em erros ignorados."},
+		{"followed by a colon", "/otto review: foco em segurança", true, "foco em segurança"},
+		{"in bold", "**/otto review**", true, ""},
+		{"as inline code with text below", "`/otto review`\n\nRevise o fallback.", true, "Revise o fallback."},
+		{"a long multi-paragraph request", "/otto review\n\nContexto longo.\n\nMais contexto.", true, "Contexto longo.\n\nMais contexto."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
