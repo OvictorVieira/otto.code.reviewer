@@ -152,38 +152,29 @@ func TestACorrectionThatTimesOutDoesNotCountAsAFreshReview(t *testing.T) {
 	}
 }
 
-func TestOpencodeFollowUpContinuesTheSessionWithoutResendingThePrompt(t *testing.T) {
-	c, err := BuildCommand(Spec{Name: "opencode", Model: "m", Effort: "high"}, Request{Prompt: "the big prompt", Dir: "/wt", Followup: "emit the JSON now"})
-	if err != nil {
-		t.Fatal(err)
+func TestOpencodeDoesNotContinueAnUnpinnedSession(t *testing.T) {
+	e := CLI{Spec: Spec{Name: "opencode"}}
+	if e.CanContinue() {
+		t.Fatal("the latest session may belong to another parallel review")
 	}
-	if !slices.Contains(c.Args, "--continue") {
-		t.Errorf("args %v must continue the last session", c.Args)
-	}
-	if c.Stdin != "" {
-		t.Errorf("the follow-up must not resend the prompt, stdin = %d bytes", len(c.Stdin))
-	}
-	if last := c.Args[len(c.Args)-1]; last != "emit the JSON now" {
-		t.Errorf("last arg = %q, want the follow-up message", last)
-	}
-	if !containsSeq(c.Args, []string{"--dir", "/wt"}) || !containsSeq(c.Args, []string{"-m", "m"}) {
-		t.Errorf("args %v must keep the directory and model", c.Args)
+	if _, err := BuildCommand(e.Spec, Request{Dir: "/wt", Followup: "emit the JSON now"}); err == nil {
+		t.Fatal("a follow-up without a pinned session ID must be rejected")
 	}
 }
 
-func TestOpencodeThroughTheRealCommandAnswersTheFollowUp(t *testing.T) {
+func TestOpencodeRepairsWithAFreshRequest(t *testing.T) {
 	fakeCLI(t, "opencode", `for arg in "$@"; do
-  if [ "$arg" = "--continue" ]; then printf 'ok'; exit 0; fi
+  if [ "$arg" = "--continue" ]; then echo 'unsafe session continuation' >&2; exit 1; fi
 done
-cat >/dev/null
-printf 'I have the plan. Confirm and I will emit the JSON.'`)
+input=$(cat)
+case "$input" in *"Your previous answer"*) printf 'ok';; *) printf 'I have the plan. Confirm and I will emit the JSON.';; esac`)
 	engine := CLI{Spec: Spec{Name: "opencode"}}
 	p := Pool{Strategy: Priority, Engines: []Engine{engine}}
 
-	out, err := p.Run(context.Background(), Request{Prompt: strings.Repeat("x", 1000), Dir: t.TempDir(), OutFile: filepath.Join(t.TempDir(), "out")}, 0, accept)
+	out, err := p.Run(context.Background(), Request{Prompt: strings.Repeat("x", 1000), Contract: "{findings:[]}", Dir: t.TempDir(), OutFile: filepath.Join(t.TempDir(), "out")}, 0, accept)
 
 	if err != nil || out.Output != "ok" {
-		t.Fatalf("out = %+v, err = %v, want the answer given after the follow-up", out, err)
+		t.Fatalf("out = %+v, err = %v, want the answer from a fresh repair request", out, err)
 	}
 }
 

@@ -40,9 +40,9 @@ func repairPrompt(contract, previous, reason string) string {
 
 // repairAnswer asks an engine whose answer was rejected to correct it, instead of failing the review.
 //
-//   - An engine that can continue its session (opencode) is told why the answer was rejected and
-//     asked again in the same session, up to maxRepairs times.
-//   - Any other engine is first given its own rejected answer to reformat into the required JSON
+//   - An engine that can safely continue a pinned session is told why the answer was rejected and
+//     asked again there, up to maxRepairs times.
+//   - Other engines are first given their rejected answer to reformat into the required JSON
 //     (cheap: no code exploration), and if that is rejected too, the original request is run once
 //     more with an instruction to answer only with the JSON.
 //

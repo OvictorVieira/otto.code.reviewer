@@ -69,7 +69,7 @@ func (p Pool) attemptContext(ctx context.Context, enginesLeft int) (context.Cont
 		remaining := time.Until(deadline)
 		limit = max(remaining/time.Duration(enginesLeft), min)
 		if limit >= remaining {
-			limit = 0 // not enough time to split; let it use what is left
+			limit = remaining / time.Duration(enginesLeft) // preserve a turn for each fallback
 		}
 	}
 	if p.AttemptTimeout > 0 && (limit == 0 || p.AttemptTimeout < limit) {

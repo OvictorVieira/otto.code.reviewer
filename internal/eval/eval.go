@@ -23,7 +23,7 @@ import (
 
 // The bar a model must clear to be recommended.
 const (
-	MinBugs = 2
+	MinBugs = 3
 	MaxTime = 3 * time.Minute
 )
 
@@ -87,12 +87,13 @@ func Percent(reserved, total int) int {
 
 // Bugs are the planted problems and the words that show a finding is about each.
 var Bugs = []struct {
-	Name string
-	Re   *regexp.Regexp
+	Name       string
+	Start, End int // lines of the function that contains the planted bug
+	Re         *regexp.Regexp
 }{
-	{"race", regexp.MustCompile(`(?i)race|concurren|mutex|\block|atomic|oversell|thread`)},
-	{"ignored error", regexp.MustCompile(`(?i)ignor|unchecked|discard|swallow|silently|error.{0,20}(not|never) (checked|handled)`)},
-	{"division by zero", regexp.MustCompile(`(?i)zero|divid|division|panic`)},
+	{"race", 12, 16, regexp.MustCompile(`(?i)race|concurren|mutex|\block|atomic|oversell|thread`)},
+	{"ignored error", 28, 30, regexp.MustCompile(`(?i)ignor|unchecked|discard|swallow|silently|error.{0,20}(not|never) (checked|handled)`)},
+	{"division by zero", 34, 35, regexp.MustCompile(`(?i)zero|divid|division|panic`)},
 }
 
 // Result is how one model did.
@@ -115,7 +116,8 @@ func Score(res review.Result) []string {
 	var found []string
 	for _, b := range Bugs {
 		for _, f := range res.Findings {
-			if b.Re.MatchString(f.Title + " " + f.Body) {
+			if f.Path == "stock/reserve.go" && f.Start <= b.End && f.End >= b.Start &&
+				b.Re.MatchString(f.Title+" "+f.Body) {
 				found = append(found, b.Name)
 				break
 			}
@@ -213,7 +215,11 @@ func Run(ctx context.Context, engineName string, models []string, opt Options) (
 			defer func() { <-sem }()
 			spec := engine.Spec{Name: engineName, Model: model} // each model at its own default effort
 			p := engine.Pool{Strategy: engine.Priority, Engines: []engine.Engine{opt.NewEngine(spec)}, AttemptTimeout: opt.Timeout}
-			out, _ := os.CreateTemp("", "otto-eval-answer-*")
+			out, err := os.CreateTemp("", "otto-eval-answer-*")
+			if err != nil {
+				results[i] = Result{Engine: engineName, Model: model, Err: firstLine(err.Error())}
+				return
+			}
 			out.Close()
 			defer os.Remove(out.Name())
 			accept := func(s string) error { _, err := review.ParseResult(s, dir); return err }

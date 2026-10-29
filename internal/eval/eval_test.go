@@ -79,6 +79,13 @@ func TestAModelThatIsTooSlowDoesNotPass(t *testing.T) {
 	}
 }
 
+func TestRecommendationRequiresEveryPlantedBug(t *testing.T) {
+	r := Result{Valid: true, Found: []string{"race", "division by zero"}, Seconds: 1}
+	if r.Passed() {
+		t.Fatal("a model that misses one planted bug must not be recommended")
+	}
+}
+
 func TestScoreMatchesEachPlantedBugOnce(t *testing.T) {
 	res, err := review.ParseResult(good, "/")
 	if err != nil {
@@ -86,5 +93,16 @@ func TestScoreMatchesEachPlantedBugOnce(t *testing.T) {
 	}
 	if got := Score(res); len(got) != 3 {
 		t.Fatalf("found = %v", got)
+	}
+}
+
+func TestScoreDoesNotCreditKeywordsAtTheWrongLocation(t *testing.T) {
+	res := review.Result{Findings: []review.Finding{
+		{Path: "stock/reserve.go", Start: 12, End: 12, Title: "Race, ignored error, division by zero"},
+		{Path: "other.go", Start: 34, End: 34, Title: "Percent divides by zero"},
+	}}
+	got := Score(res)
+	if len(got) != 1 || got[0] != "race" {
+		t.Fatalf("wrongly credited bugs at unrelated locations: %v", got)
 	}
 }

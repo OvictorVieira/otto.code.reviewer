@@ -10,12 +10,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/app"
 	_ "github.com/OvictorVieira/otto.code.reviewer/internal/boot" // must initialize before bubbletea
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/eval"
 	reviewprogress "github.com/OvictorVieira/otto.code.reviewer/internal/progress"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/service"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/setup"
@@ -37,6 +41,10 @@ Usage:
   otto learn [owner/repo ...]         read maintainer feedback now and update what Otto learned
   otto lessons <owner/repo> [pin|unpin|disable|enable|forget <id>]
                                       show or edit what Otto learned about a repository
+  otto eval models [flags] [model ...]  evaluate models against three planted review bugs
+      --engine opencode|claude|codex|cursor|copilot   engine to evaluate (default: opencode)
+      --timeout 4m                   time limit per model
+      --parallel 4                   maximum simultaneous models
   otto service install|uninstall|status
   otto update                         check GitHub and install the latest release
   otto clean                          delete cached clones and worktrees
@@ -87,6 +95,8 @@ func run(ctx context.Context, args []string) error {
 		return learnCmd(ctx, args[1:])
 	case "lessons":
 		return lessonsCmd(args[1:])
+	case "eval":
+		return evalCmd(ctx, args[1:])
 	case "service":
 		return serviceCmd(args[1:])
 	case "update":
@@ -105,6 +115,40 @@ func run(ctx context.Context, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
+}
+
+func evalCmd(ctx context.Context, args []string) error {
+	if len(args) == 0 || args[0] != "models" {
+		return fmt.Errorf("usage: otto eval models [--engine opencode] [--timeout 4m] [--parallel 4] [model ...]")
+	}
+	fs := flag.NewFlagSet("eval models", flag.ContinueOnError)
+	engineName := fs.String("engine", "opencode", "model engine")
+	timeout := fs.Duration("timeout", 4*time.Minute, "time limit per model")
+	parallel := fs.Int("parallel", 4, "maximum simultaneous models")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if !slices.Contains(engine.Known, *engineName) {
+		return fmt.Errorf("unknown engine %q", *engineName)
+	}
+	if *timeout <= 0 || *parallel <= 0 {
+		return fmt.Errorf("timeout and parallel must be positive")
+	}
+	models := fs.Args()
+	if len(models) == 0 {
+		if t, ok := engine.RecommendedTiers(*engineName, true); ok {
+			models = []string{t.Light, t.Medium, t.Heavy}
+		} else {
+			return fmt.Errorf("specify one or more model IDs for %s (no default free set)", *engineName)
+		}
+	}
+	fmt.Fprintf(os.Stdout, "Evaluating %d %s model(s) with Otto's review prompt...\n", len(models), *engineName)
+	results, err := eval.Run(ctx, *engineName, models, eval.Options{Timeout: *timeout, Parallel: *parallel, Progress: os.Stdout})
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(os.Stdout, eval.Table(results))
+	return nil
 }
 
 func review(ctx context.Context, args []string) error {

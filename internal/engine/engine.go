@@ -190,9 +190,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 			c.Args = append(c.Args, "--variant", s.Effort)
 		}
 		if req.Followup != "" {
-			c.Stdin = ""
-			c.Args = append(c.Args, "--continue", "--", req.Followup)
-			break
+			return Command{}, fmt.Errorf("opencode follow-up requires a pinned session ID")
 		}
 		c.Args = append(c.Args, "--",
 			"Follow the code review instructions in the input exactly and answer only with the JSON it asks for.")
@@ -253,8 +251,9 @@ type CLI struct{ Spec Spec }
 // Name implements Engine.
 func (e CLI) Name() string { return e.Spec.Name }
 
-// CanContinue implements Continuer: opencode keeps the session, so a follow-up costs a moment.
-func (e CLI) CanContinue() bool { return e.Spec.Name == "opencode" }
+// CanContinue is false until OpenCode follow-ups can pin the session created by this review.
+// Continuing the latest session in a shared checkout can resume another parallel review.
+func (e CLI) CanContinue() bool { return false }
 
 // Run implements Engine.
 func (e CLI) Run(ctx context.Context, req Request) (string, error) {
