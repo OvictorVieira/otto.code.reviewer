@@ -88,8 +88,11 @@ type App struct {
 	login     string // the GitHub account the watcher runs as
 	// learnPausedUntil stops background learning for a while after GitHub's rate limit.
 	learnPausedUntil time.Time
-	NewEngine        func(engine.Spec) engine.Engine
-	Installed        func(name string) bool
+	// RateLimit says when GitHub lifts the account's rate limit (zero when it is not limited),
+	// so Otto waits exactly that long instead of retrying blindly. Nil falls back to fixed waits.
+	RateLimit func(ctx context.Context) (time.Time, error)
+	NewEngine func(engine.Spec) engine.Engine
+	Installed func(name string) bool
 
 	// Upgrade installs a newer release when there is one and reports whether
 	// it did. Restart then replaces the process with the new binary.
@@ -138,6 +141,7 @@ func New(out io.Writer) (*App, error) {
 		Feedback:    github.CLI{},
 		CI:          github.CLI{},
 		Issues:      github.CLI{},
+		RateLimit:   github.RateLimitReset,
 		Levels:      engine.CachedLevels(),
 		Learn:       learn.Store{Dir: filepath.Join(dir, "learning")},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
@@ -404,6 +408,7 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	var repos []string
 	var reposAt time.Time
 	polled := map[string]time.Time{}
+	var pollPausedUntil time.Time
 	for {
 		if a.selfUpdate(ctx) || a.restartForChanges(startedAs, configStartedAs) {
 			return nil
@@ -425,12 +430,20 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 		if a.Cfg.Repos.All {
 			due = pollDue(all, polled, time.Now())
 		}
+		if time.Now().Before(pollPausedUntil) {
+			due = nil // every call would be refused until GitHub lifts the limit
+		}
 		for _, repo := range due {
 			if ctx.Err() != nil {
 				return nil
 			}
 			if a.poll(ctx, repo, allowed, queue) {
-				a.logf("GitHub API rate limit reached; polling again next cycle")
+				if reset := a.limitLifts(ctx); !reset.IsZero() {
+					pollPausedUntil = reset
+					a.logf("GitHub API rate limit reached; polling resumes at %s", reset.Format("15:04"))
+				} else {
+					a.logf("GitHub API rate limit reached; polling again next cycle")
+				}
 				break
 			}
 			polled[repo] = time.Now()
@@ -614,7 +627,7 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 		return // shutting down: leave it unmarked so it runs again on restart
 	}
 	// Engine failures are reported: their own timeouts and limits are not GitHub's.
-	if err != nil && !engine.AllFailed(err) && !errors.Is(err, engine.ErrQuotaExceeded) && github.Transient(err) && a.retryLater(req, err) {
+	if err != nil && !engine.AllFailed(err) && !errors.Is(err, engine.ErrQuotaExceeded) && github.Transient(err) && a.retryLater(ctx, req, err) {
 		return
 	}
 	write = a.postContext(ctx, req.Repo, opt)
@@ -647,7 +660,7 @@ const (
 // outage) in the queue and schedules another attempt, without writing anything on the pull
 // request. It reports false once the request is older than the lookback window: then the
 // failure is reported like any other.
-func (a *App) retryLater(req trigger.Request, err error) bool {
+func (a *App) retryLater(ctx context.Context, req trigger.Request, err error) bool {
 	now := time.Now()
 	if req.Seen.IsZero() {
 		req.Seen = now
@@ -661,6 +674,11 @@ func (a *App) retryLater(req trigger.Request, err error) bool {
 	}
 	req.Attempts++
 	req.RetryAt = now.Add(wait)
+	if github.RateLimited(err) {
+		if reset := a.limitLifts(ctx); !reset.IsZero() {
+			req.RetryAt = reset // retrying earlier is refused anyway
+		}
+	}
 	req.LastError = redact.Secrets(err.Error())
 	if len(req.LastError) > 300 {
 		req.LastError = req.LastError[:300]
@@ -672,6 +690,21 @@ func (a *App) retryLater(req trigger.Request, err error) bool {
 	a.logf("%s#%d: GitHub failed temporarily (attempt %d), retrying at %s without posting: %v",
 		req.Repo, req.PR, req.Attempts, req.RetryAt.Format("15:04"), err)
 	return true
+}
+
+// limitLifts is when GitHub lifts the rate limit, with a small margin, or zero when unknown.
+func (a *App) limitLifts(ctx context.Context) time.Time {
+	if a.RateLimit == nil {
+		return time.Time{}
+	}
+	reset, err := a.RateLimit(ctx)
+	if err != nil || reset.IsZero() {
+		return time.Time{}
+	}
+	if reset.Before(time.Now()) {
+		return time.Now().Add(30 * time.Second)
+	}
+	return reset.Add(30 * time.Second)
 }
 
 func short(sha string) string {

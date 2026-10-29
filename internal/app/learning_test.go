@@ -427,12 +427,26 @@ func TestLearningPausesOnGitHubRateLimitAndRetriesTheWholeSweep(t *testing.T) {
 	if m, _ := h.app.Learn.Load(repo); !m.LastSweep.IsZero() {
 		t.Fatal("a sweep cut short must not count, or the feedback it skipped is never read")
 	}
-	if !strings.Contains(h.out.String(), "learning resumes in") {
+	if !strings.Contains(h.out.String(), "learning resumes at") {
 		t.Fatalf("log:\n%s", h.out.String())
 	}
 
 	h.app.learnCycle(context.Background(), []string{repo})
 	if fb.reads != 1 || len(fb.since) != 1 {
 		t.Fatal("learning must wait out the pause instead of retrying every cycle")
+	}
+}
+
+func TestLearningWaitsUntilGitHubSaysTheLimitLifts(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: distillAnswer})
+	withLearning(t, h, &fakeFeedback{prs: []int{1}, err: errors.New("gh: API rate limit exceeded for user ID 1.")})
+	h.app.Cfg.Learning = true
+	reset := time.Now().Add(42 * time.Minute)
+	h.app.RateLimit = func(context.Context) (time.Time, error) { return reset, nil }
+
+	h.app.learnCycle(context.Background(), []string{repo})
+
+	if d := h.app.learnPausedUntil.Sub(reset); d < 0 || d > time.Minute {
+		t.Fatalf("paused until %v, want GitHub's reset %v", h.app.learnPausedUntil, reset)
 	}
 }

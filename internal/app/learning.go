@@ -18,7 +18,7 @@ const (
 	sweepEvery     = 30 * time.Minute   // how often the watcher re-reads feedback per repository
 	sweepPRs       = 15                 // most recently updated pull requests read per sweep
 	firstSweep     = 7 * 24 * time.Hour // how far back the first sweep of a repository looks
-	rateLimitPause = 15 * time.Minute   // how long learning waits after GitHub's rate limit
+	rateLimitPause = 15 * time.Minute   // how long learning waits after GitHub's rate limit when its reset is unknown
 	distillMinimum = 3                  // new signals needed before the watcher updates the lessons
 	distillBatch   = 40                 // most signals folded into one update
 )
@@ -96,7 +96,10 @@ func (a *App) learnCycle(ctx context.Context, repos []string) {
 		if _, err := a.LearnRepo(ctx, repo, false); err != nil {
 			if github.RateLimited(err) {
 				a.learnPausedUntil = time.Now().Add(rateLimitPause)
-				a.logf("GitHub API rate limit reached; learning resumes in %s", rateLimitPause)
+				if reset := a.limitLifts(ctx); !reset.IsZero() {
+					a.learnPausedUntil = reset
+				}
+				a.logf("GitHub API rate limit reached; learning resumes at %s", a.learnPausedUntil.Format("15:04"))
 				return
 			}
 			a.logf("%s: learning failed: %v", repo, err)
