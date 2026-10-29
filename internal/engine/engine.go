@@ -35,6 +35,9 @@ type Request struct {
 	// Followup, when set, continues the engine's last session in Dir with this message instead of
 	// starting over: used to ask for the answer an engine finished its work without giving.
 	Followup string
+	// Contract is the JSON shape the answer must have. It lets Otto ask an engine to reformat a
+	// rejected answer without resending the whole review request.
+	Contract string
 }
 
 // Engine runs a prompt and returns the final answer text.

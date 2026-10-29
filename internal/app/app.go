@@ -232,6 +232,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	}
 	outcome, err := pool.Run(ctx, engine.Request{
 		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify, Progress: progress,
+		Contract: review.OutputContract(),
 	}, a.rotation(), accept)
 	if !opt.ShowProgress {
 		for _, f := range outcome.Failures {

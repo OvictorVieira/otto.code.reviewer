@@ -47,3 +47,12 @@ func BuildPrompt(in PromptInput) (string, error) {
 	err := prompt.Execute(&b, in)
 	return b.String(), err
 }
+
+// OutputContract is the part of the prompt that says what the answer must look like. Otto sends it
+// back to an engine whose answer was not valid JSON, so the engine can fix its own output.
+func OutputContract() string {
+	if i := strings.Index(promptTemplate, "# Output"); i >= 0 {
+		return strings.TrimSpace(promptTemplate[i:])
+	}
+	return ""
+}
