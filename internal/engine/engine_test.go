@@ -243,7 +243,8 @@ func TestFallbackToNextEngineOnErrorOrBadOutput(t *testing.T) {
 	if res.Engine != "opencode" || res.Next != 0 {
 		t.Errorf("result = %+v, want opencode and cursor wrapping to 0", res)
 	}
-	if !slices.Equal(runs, []string{"claude", "codex", "opencode"}) {
+	// codex answered with garbage, so the request was run again once before opencode took over.
+	if !slices.Equal(runs, []string{"claude", "codex", "codex", "opencode"}) {
 		t.Errorf("runs = %v", runs)
 	}
 	if len(res.Failures) != 2 {

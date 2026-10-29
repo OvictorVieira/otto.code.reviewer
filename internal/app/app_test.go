@@ -241,7 +241,8 @@ func TestReviewFallsBackToNextEngineAndLabelsTheOneThatAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Engine != "codex" || strings.Join(calls, ",") != "claude,codex" {
+	// claude's unusable answer is corrected twice (reformat, then run again) before codex takes over.
+	if report.Engine != "codex" || strings.Join(calls, ",") != "claude,claude,claude,codex" {
 		t.Errorf("engine = %s, calls = %v", report.Engine, calls)
 	}
 	if !strings.Contains(h.host.posted[0].Body, "`codex`") {
