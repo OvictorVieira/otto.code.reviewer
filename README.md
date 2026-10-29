@@ -292,6 +292,24 @@ engines:
 
 </details>
 
+## Learning from your feedback
+
+Otto gets better at your repository the way a developer does: by reading how you react to its findings.
+
+- **What it reads:** your 👍 / 👎 on each finding, your replies (`Fixed in abc`, `Won't fix. <reason>`) and whether the
+  thread was resolved. Replies carry the most weight, because the reason is what teaches.
+- **What it keeps:** a short list of lessons per repository in `~/.config/otto/learning/` (at most 25, editable).
+  The watcher refreshes them in the background every 30 minutes once at least 3 new signals arrived; `otto learn`
+  does it on demand.
+- **What it uses, without growing the prompt:** before each review Otto brings in only the lessons that match the
+  changed files (a lesson can be scoped to a path glob), ranked by relevance and evidence, inside a fixed budget
+  (about 400 tokens). On a pull request it was already asked to review, it also remembers its earlier findings that
+  were rejected (with your reason) or are still open, and skips the ones already fixed.
+- **You stay in control:** `otto lessons owner/repo` lists them; `pin`, `disable`, `enable` or `forget` an id.
+  Pinned lessons are never dropped. Turn it off with `learning: false` in `config.yaml`.
+
+Lessons stay on your machine and are never posted to GitHub.
+
 ## Why Otto exists
 
 ### #1: Good reviewers only look at the diff

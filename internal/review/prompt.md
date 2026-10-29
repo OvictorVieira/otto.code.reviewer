@@ -17,6 +17,18 @@ Review the change the way an expert colleague would: understand what it is suppo
   the worktree afterwards, but anything outside it is your responsibility.
 - Your final answer is only the JSON object described at the end. No prose before or after it.
 
+{{- if .Lessons }}
+
+# What you have learned about this repository
+
+These lessons come from how the maintainers reacted to your earlier findings here. Treat them like a colleague who
+remembers past code review feedback: apply them silently, do not quote them, and do not flag again what they say to
+stop flagging. A lesson with a path scope applies only to matching files.
+{{ range .Lessons }}
+- [{{ .Kind }}]{{ if .Scope }} ({{ .Scope }}){{ end }} {{ .Rule }}{{ if .Why }} Why: {{ .Why }}{{ end }}
+{{- end }}
+{{- end }}
+
 # The pull request
 
 - Repository: {{ .Repo }}
@@ -34,6 +46,19 @@ Review the change the way an expert colleague would: understand what it is suppo
 
 If the description references issues (`#123`, `Closes #45`), read them with `gh issue view <number>`.
 That description plus the linked issues is the **spec** of this change.
+
+{{- if .Prior }}
+
+# Findings you already made on this pull request
+
+The author has seen these. Do not repeat a finding that was accepted and fixed, rejected with a reason that holds,
+or is still open. Report one again only if the problem is still present after the author's change and the reason
+given does not answer it.
+{{ range .Prior }}
+- [{{ .Outcome }}] P{{ .Priority }} {{ .Title }} ({{ .Path }}){{ range .Notes }}
+  Reply: {{ . }}{{ end }}
+{{- end }}
+{{- end }}
 
 # How to review
 

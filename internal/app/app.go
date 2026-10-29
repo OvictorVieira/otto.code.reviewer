@@ -21,6 +21,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/format"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/ghapp"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/update"
@@ -70,6 +71,10 @@ type App struct {
 	Out       io.Writer
 	Host      Host
 	Checkouts Checkouts
+	Feedback  Feedback    // nil disables learning
+	Learn     learn.Store // where Otto keeps what it learned, per repository
+	learnMu   sync.Mutex
+	learnBusy int32
 	NewEngine func(engine.Spec) engine.Engine
 	Installed func(name string) bool
 
@@ -117,6 +122,8 @@ func New(out io.Writer) (*App, error) {
 		ConfigStamp: config.Stamp,
 		Host:        github.CLI{},
 		Checkouts:   gitCheckouts{},
+		Feedback:    github.CLI{},
+		Learn:       learn.Store{Dir: filepath.Join(dir, "learning")},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
 		Installed:   engine.Installed,
 	}, nil
@@ -193,9 +200,11 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	}
 	defer wt.Remove()
 
+	lessons, prior := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
 	prompt, err := review.BuildPrompt(review.PromptInput{
 		Repo: repo, URL: pr.URL, Title: pr.Title, Body: pr.Body, Base: pr.BaseRefName, HeadSHA: pr.HeadRefOid,
 		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions, Verify: a.Cfg.Verify,
+		Lessons: lessons, Prior: prior,
 	})
 	if err != nil {
 		return Report{}, err
@@ -387,6 +396,7 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 			}
 			a.poll(ctx, repo, allowed, queue)
 		}
+		go a.learnCycle(ctx, repos)
 		if once {
 			queue.wait()
 			return nil

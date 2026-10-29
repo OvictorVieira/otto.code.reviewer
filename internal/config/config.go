@@ -40,6 +40,9 @@ type Config struct {
 	PollInterval   time.Duration   `yaml:"poll_interval"`
 	Lookback       time.Duration   `yaml:"lookback"`
 	Timeout        time.Duration   `yaml:"timeout"`
+	// Learning makes Otto read how maintainers react to its findings (reactions, replies,
+	// resolved threads) and apply what it learns in later reviews.
+	Learning bool `yaml:"learning"`
 }
 
 // Default returns a working configuration before setup customizes it.
@@ -53,6 +56,7 @@ func Default() Config {
 		PollInterval:  60 * time.Second,
 		Lookback:      24 * time.Hour,
 		Timeout:       30 * time.Minute,
+		Learning:      true,
 	}
 }
 
