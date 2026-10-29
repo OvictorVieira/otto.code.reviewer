@@ -23,6 +23,7 @@ import (
 	reviewprogress "github.com/OvictorVieira/otto.code.reviewer/internal/progress"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/service"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/setup"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/update"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/workspace"
 )
@@ -38,6 +39,7 @@ Usage:
       --dry-run                       print the review instead of posting it
       --focus "text"                  extra instructions for the reviewer
   otto watch [--once]                 poll repositories and answer the trigger comment
+  otto queue                          list review requests seen but not finished (waiting, running, retrying)
   otto learn [owner/repo ...]         read maintainer feedback now and update what Otto learned
   otto lessons <owner/repo> [pin|unpin|disable|enable|forget <id>]
                                       show or edit what Otto learned about a repository
@@ -91,6 +93,17 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		return a.Watch(ctx, *once)
+	case "queue":
+		dir, err := config.Dir()
+		if err != nil {
+			return err
+		}
+		st, err := trigger.LoadState(filepath.Join(dir, "state.json"))
+		if err != nil {
+			return err
+		}
+		fmt.Print(app.QueueReport(st.Pending, time.Now()))
+		return nil
 	case "learn":
 		return learnCmd(ctx, args[1:])
 	case "lessons":

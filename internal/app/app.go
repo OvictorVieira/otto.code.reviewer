@@ -23,6 +23,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/ghapp"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/redact"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/slice"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
@@ -38,6 +39,8 @@ type Host interface {
 	PostReview(ctx context.Context, repo string, number int, payload any) error
 	Comment(ctx context.Context, repo string, number int, body string) error
 	React(ctx context.Context, repo string, commentID int64, content string) error
+	// ClearFailures removes the failure comments and 😕 reactions earlier attempts left on a pull request.
+	ClearFailures(ctx context.Context, repo string, number int, login string) error
 	CommentsSince(ctx context.Context, repo string, since time.Time) ([]trigger.Comment, error)
 	Repos(ctx context.Context) ([]github.Repo, error)
 }
@@ -82,6 +85,7 @@ type App struct {
 	Learn     learn.Store // where Otto keeps what it learned, per repository
 	learnMu   sync.Mutex
 	learnBusy int32
+	login     string // the GitHub account the watcher runs as
 	// learnPausedUntil stops background learning for a while after GitHub's rate limit.
 	learnPausedUntil time.Time
 	NewEngine        func(engine.Spec) engine.Engine
@@ -385,6 +389,7 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	if err != nil {
 		return fmt.Errorf("gh is not logged in (run `gh auth login`): %w", err)
 	}
+	a.login = login
 	allowed := a.Cfg.AllowedAuthors
 	if len(allowed) == 0 {
 		allowed = []string{login}
@@ -430,6 +435,7 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 			}
 			polled[repo] = time.Now()
 		}
+		queue.retryDue(time.Now())
 		go a.learnCycle(ctx, repos)
 		if once {
 			queue.wait()
@@ -607,6 +613,10 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 	if ctx.Err() != nil {
 		return // shutting down: leave it unmarked so it runs again on restart
 	}
+	// Engine failures are reported: their own timeouts and limits are not GitHub's.
+	if err != nil && !engine.AllFailed(err) && !errors.Is(err, engine.ErrQuotaExceeded) && github.Transient(err) && a.retryLater(req, err) {
+		return
+	}
 	write = a.postContext(ctx, req.Repo, opt)
 	a.stateMu.Lock()
 	a.State.MarkDone(req.CommentID, time.Now())
@@ -620,9 +630,48 @@ func (a *App) handle(ctx context.Context, req trigger.Request) {
 		_ = a.Host.Comment(write, req.Repo, req.PR, format.Failure(engine.Failures(err), a.Cfg.Trigger, a.Cfg.Language))
 		return
 	}
+	if cerr := a.Host.ClearFailures(write, req.Repo, req.PR, a.login); cerr != nil {
+		a.logf("%s#%d: removing earlier failure notices failed: %v", req.Repo, req.PR, cerr)
+	}
 	if report.Findings == 0 {
 		_ = a.Host.React(write, req.Repo, req.CommentID, "+1")
 	}
+}
+
+const (
+	retryFirst = 5 * time.Minute  // wait before the first retry after a temporary GitHub failure
+	retryMax   = 30 * time.Minute // longest wait between retries
+)
+
+// retryLater keeps a request that failed for a temporary GitHub reason (rate limit, timeout,
+// outage) in the queue and schedules another attempt, without writing anything on the pull
+// request. It reports false once the request is older than the lookback window: then the
+// failure is reported like any other.
+func (a *App) retryLater(req trigger.Request, err error) bool {
+	now := time.Now()
+	if req.Seen.IsZero() {
+		req.Seen = now
+	}
+	if now.Sub(req.Seen) >= a.Cfg.Lookback {
+		return false
+	}
+	wait := retryFirst << min(req.Attempts, 3)
+	if wait > retryMax {
+		wait = retryMax
+	}
+	req.Attempts++
+	req.RetryAt = now.Add(wait)
+	req.LastError = redact.Secrets(err.Error())
+	if len(req.LastError) > 300 {
+		req.LastError = req.LastError[:300]
+	}
+	a.stateMu.Lock()
+	a.State.Pending[req.CommentID] = req
+	_ = a.State.Save()
+	a.stateMu.Unlock()
+	a.logf("%s#%d: GitHub failed temporarily (attempt %d), retrying at %s without posting: %v",
+		req.Repo, req.PR, req.Attempts, req.RetryAt.Format("15:04"), err)
+	return true
 }
 
 func short(sha string) string {

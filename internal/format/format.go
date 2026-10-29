@@ -240,6 +240,9 @@ var failureWords = map[bool]struct {
 	},
 }
 
+// failureMarker matches github.FailureMarker; a later successful review deletes comments carrying it.
+const failureMarker = "<!-- otto-review-failure:v1 -->"
+
 // Failure explains why a review could not finish. It names each engine and the kind of problem,
 // says what to do about each kind, and never repeats raw engine output, which can contain code
 // from the diff. The detail stays in Otto's own log.
@@ -274,6 +277,7 @@ func Failure(failures []engine.EngineFailure, trigger, language string) string {
 	}
 	fmt.Fprintf(&b, "%s %s\n\n%s\n\n", words.todo, strings.Join(hints, " "), words.logNote)
 	fmt.Fprintf(&b, words.retry, trigger)
+	b.WriteString("\n\n" + failureMarker)
 	return b.String()
 }
 

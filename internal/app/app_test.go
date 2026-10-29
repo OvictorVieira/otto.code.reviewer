@@ -60,11 +60,21 @@ type fakeHost struct {
 	plain        []string
 	reactions    []reaction
 	writes       []write
-	diff         string // overrides the default one-file diff
+	diff         string   // overrides the default one-file diff
+	prErrs       []error  // returned by the next GetPR calls, in order
+	cleared      []string // logins ClearFailures ran for
 }
 
 func (h *fakeHost) Login(context.Context) (string, error) { return "OvictorVieira", nil }
 func (h *fakeHost) GetPR(_ context.Context, _ string, n int) (github.PR, error) {
+	h.mu.Lock()
+	if len(h.prErrs) > 0 {
+		err := h.prErrs[0]
+		h.prErrs = h.prErrs[1:]
+		h.mu.Unlock()
+		return github.PR{}, err
+	}
+	h.mu.Unlock()
 	return github.PR{Number: n, Title: "feat: reserve stock", Body: "Closes #7", URL: "https://github.com/" + repo + "/pull/1",
 		BaseRefName: "main", HeadRefOid: "abc1234567890"}, nil
 }
@@ -101,6 +111,12 @@ func (h *fakeHost) React(ctx context.Context, _ string, id int64, content string
 	defer h.mu.Unlock()
 	h.writes = append(h.writes, write{"react", github.TokenFrom(ctx)})
 	h.reactions = append(h.reactions, reaction{id, content})
+	return nil
+}
+func (h *fakeHost) ClearFailures(_ context.Context, _ string, _ int, login string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cleared = append(h.cleared, login)
 	return nil
 }
 func (h *fakeHost) CommentsSince(context.Context, string, time.Time) ([]trigger.Comment, error) {
@@ -421,6 +437,9 @@ func TestWatchReportsFailureWithConfusedReactionAndComment(t *testing.T) {
 	}
 	if !h.app.State.Done(12) {
 		t.Error("a failed request is still marked done; the user re-triggers it")
+	}
+	if !strings.Contains(h.host.plain[0], github.FailureMarker) {
+		t.Error("the failure comment must carry the marker a later successful review removes it by")
 	}
 }
 
@@ -910,5 +929,95 @@ func TestPollingStopsTheCycleWhenGitHubRateLimits(t *testing.T) {
 	}
 	if !strings.Contains(h.out.String(), "rate limit reached") || strings.Contains(h.out.String(), "reading comments failed") {
 		t.Fatalf("log:\n%s", h.out.String())
+	}
+}
+
+var rateLimited = errors.New("gh pr view: exit status 1: GraphQL: API rate limit already exceeded for user ID 1.")
+
+func TestATemporaryGitHubFailureIsRetriedWithoutWritingOnThePullRequest(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.host.comments = []trigger.Comment{triggerComment(21, "OvictorVieira")}
+	h.host.prErrs = []error{rateLimited}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(h.host.plain) != 0 {
+		t.Fatalf("a temporary failure must not be commented: %v", h.host.plain)
+	}
+	for _, r := range h.host.reactions {
+		if r.content == "confused" {
+			t.Fatal("a temporary failure must not get 😕")
+		}
+	}
+	req := h.app.State.Pending[21]
+	if h.app.State.Done(21) || req.Attempts != 1 || req.RetryAt.IsZero() || !strings.Contains(req.LastError, "rate limit") {
+		t.Fatalf("the request must wait for a retry: %+v", req)
+	}
+	if !strings.Contains(QueueReport(h.app.State.Pending, time.Now()), "retry 2 at") {
+		t.Fatal("otto queue must show the retry")
+	}
+
+	// Retry time reached: the next cycle reviews it and clears earlier failure notices.
+	req.RetryAt = time.Now().Add(-time.Second)
+	h.app.State.Pending[21] = req
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if !h.app.State.Done(21) || len(h.app.State.Pending) != 0 {
+		t.Fatal("the retried request must finish")
+	}
+	if len(h.host.posted) != 1 || len(h.host.cleared) != 1 || h.host.cleared[0] != "OvictorVieira" {
+		t.Fatalf("posted %d reviews, cleared %v", len(h.host.posted), h.host.cleared)
+	}
+	if last := h.host.reactions[len(h.host.reactions)-1]; last != (reaction{21, "+1"}) {
+		t.Fatalf("reactions = %v", h.host.reactions)
+	}
+}
+
+func TestARetryIsNotRunBeforeItsTime(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.State.Pending[22] = trigger.Request{Repo: repo, PR: 1, CommentID: 22, Author: "OvictorVieira",
+		Seen: time.Now(), Attempts: 1, RetryAt: time.Now().Add(time.Hour)}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(h.host.posted) != 0 || h.app.State.Done(22) {
+		t.Fatal("a request must wait until its retry time")
+	}
+}
+
+func TestATemporaryFailureIsReportedOnceTheRequestIsTooOld(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.State.Pending[23] = trigger.Request{Repo: repo, PR: 1, CommentID: 23, Author: "OvictorVieira",
+		Seen: time.Now().Add(-2 * h.app.Cfg.Lookback), Attempts: 9}
+	h.host.prErrs = []error{rateLimited}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if !h.app.State.Done(23) || len(h.host.plain) != 1 {
+		t.Fatalf("an expired request must be reported once: done=%v comments=%v", h.app.State.Done(23), h.host.plain)
+	}
+}
+
+func TestAnEngineTimeoutIsReportedNotRetried(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", err: errors.New("timed out after 7m")})
+	h.host.comments = []trigger.Comment{triggerComment(24, "OvictorVieira")}
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if !h.app.State.Done(24) || len(h.host.plain) != 1 {
+		t.Fatal("an engine's own timeout is a review failure, not a GitHub hiccup")
+	}
+	if len(h.host.cleared) != 0 {
+		t.Fatal("a failed review must not clear failure notices")
 	}
 }
