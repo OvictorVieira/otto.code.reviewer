@@ -75,6 +75,8 @@ type App struct {
 	Checkouts Checkouts
 	Feedback  Feedback  // nil disables learning
 	CI        ci.Reader // nil skips the CI evidence
+	// Issues reads issues the description links to, so they become part of the spec. Nil skips them.
+	Issues IssueReader
 	// Levels lists the effort levels a model accepts. Nil uses the engine's general list.
 	Levels    func(engineName, model string) []string
 	Learn     learn.Store // where Otto keeps what it learned, per repository
@@ -129,6 +131,7 @@ func New(out io.Writer) (*App, error) {
 		Checkouts:   gitCheckouts{},
 		Feedback:    github.CLI{},
 		CI:          github.CLI{},
+		Issues:      github.CLI{},
 		Levels:      engine.CachedLevels(),
 		Learn:       learn.Store{Dir: filepath.Join(dir, "learning")},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
@@ -216,7 +219,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	in := review.PromptInput{
 		Repo: repo, URL: pr.URL, Title: pr.Title, Body: pr.Body, Base: pr.BaseRefName, HeadSHA: pr.HeadRefOid,
 		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions,
-		Lessons: lessons, Prior: prior, CI: ciEvidence,
+		Lessons: lessons, Prior: prior, CI: ciEvidence, Issues: a.linkedIssues(ctx, repo, number, pr.Body),
 	}
 	a.reviewStatus(opt, fmt.Sprintf("%s#%d: preparing review instructions for %d changed files", repo, number, len(d.Files())),
 		fmt.Sprintf("Preparando análise de %d arquivos…", len(d.Files())))
@@ -656,4 +659,48 @@ func (a *App) forTier(s engine.Spec, tier engine.Tier) engine.Spec {
 		levels = a.Levels(s.Name, model)
 	}
 	return s.ForTier(tier, levels)
+}
+
+// IssueReader reads one issue.
+type IssueReader interface {
+	Issue(ctx context.Context, repo string, number int) (title, body string, err error)
+}
+
+// issueRef finds "#12", "owner/repo#12" or "Closes #12" in a description.
+var issueRef = regexp.MustCompile(`(?:^|[\s(\[])(?:([\w.-]+/[\w.-]+))?#(\d+)\b`)
+
+// maxLinkedIssues and maxIssueBytes keep the spec from crowding out the diff.
+const (
+	maxLinkedIssues = 3
+	maxIssueBytes   = 4000
+)
+
+// linkedIssues reads the issues of this repository that the description mentions. Engines no
+// longer have a shell to read them, so Otto hands them over as part of the spec.
+func (a *App) linkedIssues(ctx context.Context, repo string, number int, body string) string {
+	if a.Issues == nil {
+		return ""
+	}
+	var b strings.Builder
+	seen := map[int]bool{number: true}
+	for _, m := range issueRef.FindAllStringSubmatch(body, -1) {
+		if m[1] != "" && !strings.EqualFold(m[1], repo) {
+			continue // another repository: not read
+		}
+		n, _ := strconv.Atoi(m[2])
+		if seen[n] || len(seen) > maxLinkedIssues {
+			continue
+		}
+		seen[n] = true
+		title, text, err := a.Issues.Issue(ctx, repo, n)
+		if err != nil {
+			a.logf("%s#%d: reading linked issue #%d failed: %v", repo, number, n, err)
+			continue
+		}
+		if len(text) > maxIssueBytes {
+			text = text[:maxIssueBytes] + "\n…(cut)"
+		}
+		fmt.Fprintf(&b, "### #%d %s\n\n%s\n\n", n, title, strings.TrimSpace(text))
+	}
+	return strings.TrimSpace(b.String())
 }

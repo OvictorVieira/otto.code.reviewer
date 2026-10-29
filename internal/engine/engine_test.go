@@ -22,8 +22,9 @@ func TestClaudeCommandIsReadOnlyAndMapsModelAndEffort(t *testing.T) {
 		{"--model", "sonnet"},
 		{"--effort", "high"},
 		{"--permission-mode", "dontAsk"},
-		{"--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)"},
-		{"--disallowedTools", "Edit", "Write", "NotebookEdit"},
+		{"--setting-sources", "user"},
+		{"--allowedTools", "Read(./**)", "Grep(./**)", "Glob(./**)"},
+		{"--disallowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch"},
 	} {
 		if !containsSeq(c.Args, want) {
 			t.Errorf("args %v missing %v", c.Args, want)
@@ -159,8 +160,11 @@ func TestEveryEngineRunsReadOnly(t *testing.T) {
 	req := Request{Prompt: "p", Dir: "/wt", OutFile: "/tmp/out"}
 
 	claude, _ := BuildCommand(Spec{Name: "claude"}, req)
-	if slices.Contains(claude.Args, "Bash") {
-		t.Errorf("claude read-only must not allow every shell command: %v", claude.Args)
+	allowed := claude.Args[slices.Index(claude.Args, "--allowedTools")+1 : slices.Index(claude.Args, "--disallowedTools")]
+	for _, tool := range allowed {
+		if !strings.HasSuffix(tool, "(./**)") {
+			t.Errorf("claude may only read inside the checkout, got allowed tool %q", tool)
+		}
 	}
 	codex, _ := BuildCommand(Spec{Name: "codex"}, req)
 	if !containsSeq(codex.Args, []string{"-s", "read-only"}) {

@@ -132,7 +132,8 @@ type Command struct {
 	Args       []string
 	Dir        string
 	Stdin      string
-	OutputFile string // read after the run when set (codex)
+	OutputFile string   // read after the run when set (codex)
+	Env        []string // extra environment variables, on top of Otto's own
 }
 
 // BuildCommand maps a spec to the CLI flags of each tool. Reviews only read the code: every engine
@@ -150,8 +151,11 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		if s.Effort != "" {
 			c.Args = append(c.Args, "--effort", s.Effort)
 		}
-		c.Args = append(c.Args, "--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)")
-		c.Args = append(c.Args, "--disallowedTools", "Edit", "Write", "NotebookEdit")
+		// Reading is confined to the checkout, and settings a pull request could ship in the repository
+		// (.claude/settings.json) are ignored: only the user's own settings apply.
+		c.Args = append(c.Args, "--setting-sources", "user",
+			"--allowedTools", "Read(./**)", "Grep(./**)", "Glob(./**)",
+			"--disallowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch")
 	case "codex":
 		c.Stdin = req.Prompt
 		c.OutputFile = req.OutFile
@@ -176,6 +180,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		// The prompt goes on stdin: attaching a large file with -f makes opencode stall before it
 		// reaches the model, while the same text on stdin is answered in seconds.
 		c.Stdin = req.Prompt
+		c.Env = []string{"OPENCODE_CONFIG_CONTENT=" + opencodeLockdown()}
 		c.Args = []string{"run", "--agent", "plan"}
 		c.Args = append(c.Args, "--dir", req.Dir)
 		if s.Model != "" {
@@ -279,6 +284,9 @@ func (e CLI) Run(ctx context.Context, req Request) (string, error) {
 		return "", err
 	}
 	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
+	if len(c.Env) > 0 {
+		cmd.Env = append(os.Environ(), c.Env...)
+	}
 	isolate(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -447,6 +455,8 @@ var (
 	ansiColors   = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	retryNotice  = regexp.MustCompile(`(?i)\b(retry|retrying|reconnecting)\b[^\n]*attempt\s+\d+`)
 	opencodeFail = regexp.MustCompile(`^Error:`)
+	// A tool call Otto's lockdown refused is reported as an error, but the model carries on without it.
+	permissionRefusal = regexp.MustCompile(`(?i)rule which prevents you|rejected permission|auto-rejecting|permission denied`)
 )
 
 // stuckSignal reads one line an engine wrote to stderr and says why the engine should be
@@ -454,7 +464,7 @@ var (
 // retrying until the session is released, which would hold the review for the whole timeout.
 func stuckSignal(bin, line string, retryNotices *int) string {
 	line = strings.TrimSpace(ansiColors.ReplaceAllString(line, ""))
-	if bin == "opencode" && opencodeFail.MatchString(line) {
+	if bin == "opencode" && opencodeFail.MatchString(line) && !permissionRefusal.MatchString(line) {
 		return "reported an error"
 	}
 	if retryNotice.MatchString(line) && !strings.ContainsAny(line, "{};=<>") {

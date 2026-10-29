@@ -1,7 +1,9 @@
 package review
 
 import (
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"strings"
 	"text/template"
 
@@ -40,6 +42,12 @@ type PromptInput struct {
 	// across all parts; it lists what the parts already found.
 	Part        string
 	Integration string
+
+	// Issues holds the title and body of issues the description links to.
+	Issues string
+	// Fence marks where untrusted text starts and ends. It is random per prompt, so text in a pull
+	// request cannot close the fence and pose as Otto's own instructions. Empty picks one.
+	Fence string
 }
 
 // BuildPrompt renders the review harness for one pull request.
@@ -50,6 +58,13 @@ func BuildPrompt(in PromptInput) (string, error) {
 	}
 	if len(in.Diff) > limit {
 		in.Diff, in.DiffTruncated = in.Diff[:limit], true
+	}
+	if in.Fence == "" {
+		in.Fence = newFence()
+	}
+	// A pull request that contains the fence (it cannot know it in advance) gets it neutralized.
+	for _, f := range []*string{&in.Body, &in.Diff, &in.CI, &in.Integration, &in.Issues, &in.Title} {
+		*f = strings.ReplaceAll(*f, in.Fence, "[fence]")
 	}
 	var b strings.Builder
 	err := prompt.Execute(&b, in)
@@ -63,4 +78,10 @@ func OutputContract() string {
 		return strings.TrimSpace(promptTemplate[i:])
 	}
 	return ""
+}
+
+func newFence() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

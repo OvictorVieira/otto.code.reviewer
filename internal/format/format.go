@@ -5,6 +5,7 @@ package format
 import (
 	"errors"
 	"fmt"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/redact"
 	"slices"
 	"strings"
 
@@ -81,12 +82,12 @@ type Review struct {
 func Payload(commitSHA string, p review.Placement, r review.Result, m Meta) Review {
 	out := Review{
 		CommitID: commitSHA,
-		Body:     Summary(commitSHA, p, r, m),
-		Event:    "COMMENT",
+		Body:     redact.Secrets(Summary(commitSHA, p, r, m)),
+		Event:    "COMMENT", // never APPROVE or REQUEST_CHANGES: a pull request cannot talk Otto into a verdict that gates a merge
 		Comments: []Comment{},
 	}
 	for _, f := range p.Inline {
-		c := Comment{Path: f.Path, Line: f.End, Side: "RIGHT", Body: InlineBody(f)}
+		c := Comment{Path: f.Path, Line: f.End, Side: "RIGHT", Body: redact.Secrets(InlineBody(f))}
 		if f.Start < f.End {
 			c.StartLine, c.StartSide = f.Start, "RIGHT"
 		}

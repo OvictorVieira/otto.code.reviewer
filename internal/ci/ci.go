@@ -5,6 +5,7 @@ package ci
 import (
 	"context"
 	"fmt"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/redact"
 	"regexp"
 	"strings"
 	"time"
@@ -111,15 +112,6 @@ var (
 	failLine  = regexp.MustCompile(`--- FAIL|\bFAIL\b|(?i:\bfailed\b|\berror\b|panic:|exception|assertion|\bexpected\b|✗|✕|##\[error\])`)
 	timestamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[\d:.]+Z\s?`)
 	ansi      = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
-	secrets   = []*regexp.Regexp{
-		regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),
-		regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
-		regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`),
-		regexp.MustCompile(`\bxox[abpr]-[A-Za-z0-9-]{10,}`),
-		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
-		regexp.MustCompile(`(?i)(bearer|token|password|secret|api[_-]?key)(["'\s:=]+)[^\s"']{8,}`),
-		regexp.MustCompile(`\bnapi_[A-Za-z0-9]{20,}`),
-	}
 )
 
 // Excerpt keeps the lines of a CI log that explain a failure (with a little context), at most
@@ -148,24 +140,11 @@ func Excerpt(log string, maxLines, maxBytes int) string {
 	if len(out) > maxLines {
 		out = out[len(out)-maxLines:]
 	}
-	text := Redact(strings.Join(out, "\n"))
+	text := redact.Secrets(strings.Join(out, "\n"))
 	if len(text) > maxBytes {
 		text = "…" + text[len(text)-maxBytes:]
 	}
 	return text
-}
-
-// Redact hides tokens and credentials before a log reaches a prompt or a pull request comment.
-func Redact(s string) string {
-	for _, re := range secrets {
-		s = re.ReplaceAllStringFunc(s, func(m string) string {
-			if sub := re.FindStringSubmatch(m); len(sub) == 3 {
-				return sub[1] + sub[2] + "[REDACTED]"
-			}
-			return "[REDACTED]"
-		})
-	}
-	return s
 }
 
 // Render describes the report for the review prompt.
