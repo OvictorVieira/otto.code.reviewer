@@ -84,7 +84,7 @@ func repairAnswer(ctx context.Context, e Engine, req Request, previous string, r
 
 	if strings.TrimSpace(previous) != "" && strings.TrimSpace(req.Contract) != "" {
 		r := req
-		r.Prompt, r.Followup, r.Verify = repairPrompt(req.Contract, previous, reason), "", false
+		r.Prompt, r.Followup = repairPrompt(req.Contract, previous, reason), ""
 		if text, ok := try(r, "asking it to reformat its answer"); ok {
 			return text, nil
 		}

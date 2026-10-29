@@ -30,7 +30,7 @@ func TestLoadFillsDefaultsForMissingFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Trigger != "/otto review" || c.Strategy != engine.RoundRobin || !c.Verify || c.Timeout != 30*time.Minute {
+	if c.Trigger != "/otto review" || c.Strategy != engine.RoundRobin || c.Timeout != 30*time.Minute {
 		t.Errorf("defaults not applied: %+v", c)
 	}
 }
@@ -53,7 +53,6 @@ func TestSaveThenLoadKeepsEverySetting(t *testing.T) {
 	want.Repos = Repos{Selected: []string{"o/a", "o/b"}}
 	want.Engines = []engine.Spec{{Name: "codex", Model: "gpt-6-luna", Effort: "high"}, {Name: "cursor"}}
 	want.Strategy = engine.Priority
-	want.Verify = false
 	want.PollInterval = 2 * time.Minute
 
 	if _, err := Save(want); err != nil {
@@ -64,7 +63,7 @@ func TestSaveThenLoadKeepsEverySetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Strategy != want.Strategy || got.Verify || got.PollInterval != want.PollInterval ||
+	if got.Strategy != want.Strategy || got.PollInterval != want.PollInterval ||
 		len(got.Engines) != 2 || got.Engines[0] != want.Engines[0] || len(got.Repos.Selected) != 2 {
 		t.Errorf("round trip lost data:\n got %+v\nwant %+v", got, want)
 	}

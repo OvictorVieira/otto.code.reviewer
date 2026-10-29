@@ -11,14 +11,14 @@ func TestPromptIncludesSpecDiffAndVerificationSteps(t *testing.T) {
 	p, err := BuildPrompt(PromptInput{
 		Repo: "OvictorVieira/elevra.ai", URL: "https://github.com/OvictorVieira/elevra.ai/pull/165",
 		Title: "feat: add evidence contracts", Body: "Closes #160", Base: "main", HeadSHA: "abc123",
-		Files: []string{"src/a.ts"}, Diff: "+const a = 1", Language: "English", Verify: true,
+		Files: []string{"src/a.ts"}, Diff: "+const a = 1", Language: "English",
 		Instructions: "focus on security",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Closes #160", "git diff origin/main...HEAD", "Verify by running it", "- src/a.ts",
+		"Closes #160", "git diff origin/main...HEAD", "- src/a.ts",
 		"+const a = 1", "focus on security", "Never modify tracked files", "Write titles and bodies in English",
 	} {
 		if !strings.Contains(p, want) {
@@ -27,13 +27,13 @@ func TestPromptIncludesSpecDiffAndVerificationSteps(t *testing.T) {
 	}
 }
 
-func TestPromptWithoutVerificationSkipsRunningSteps(t *testing.T) {
+func TestPromptNeverAsksTheEngineToRunTheProject(t *testing.T) {
 	p, err := BuildPrompt(PromptInput{Repo: "o/r", Base: "main", Diff: "+x", Language: "English"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(p, "Verify by running it") {
-		t.Error("read-only review must not ask the engine to run the project")
+	if strings.Contains(p, "Verify by running it") || !strings.Contains(p, "Do not install dependencies, build, run tests") {
+		t.Error("the review reads the code: it must forbid running the project")
 	}
 }
 

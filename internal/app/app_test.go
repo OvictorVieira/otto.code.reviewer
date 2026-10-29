@@ -204,7 +204,7 @@ func TestReviewPostsInlineFindingWithEngineLabelAndRemovesCheckout(t *testing.T)
 	if !strings.Contains(r.Comments[0].Body, "P1-orange") || !strings.Contains(r.Body, "`claude` · model `m-claude`") {
 		t.Errorf("review body or badge wrong:\n%s\n%s", r.Body, r.Comments[0].Body)
 	}
-	if got.Dir != "/tmp/otto-wt" || !got.Verify || !strings.Contains(got.Prompt, "feat: reserve stock") {
+	if got.Dir != "/tmp/otto-wt" || !strings.Contains(got.Prompt, "feat: reserve stock") {
 		t.Errorf("engine request = %+v", got)
 	}
 	if h.checkouts.prepared != 1 || h.checkouts.removed != 1 {

@@ -329,7 +329,7 @@ func (w *wizard) engineSteps() []step {
 	if len(w.cfg.Engines) > 1 {
 		s = append(s, w.stepStrategy())
 	}
-	return append(s, w.stepVerify(), w.stepLanguage(), w.stepIdentity(), w.stepService())
+	return append(s, w.stepLanguage(), w.stepIdentity(), w.stepService())
 }
 
 func (w *wizard) stepModel(i int) step {
@@ -434,20 +434,6 @@ func (w *wizard) stepStrategy() step {
 		}
 		return choice("When more than one engine is configured", items, string(w.cfg.Strategy), "",
 			func(v string) { w.cfg.Strategy = engine.Strategy(v) })
-	}}
-}
-
-func (w *wizard) stepVerify() step {
-	return step{show: func() (ui, func([]string) *nested) {
-		items := []picker.Item{
-			{Value: "yes", Title: "Run the project", Hint: "install, build, run tests and probe scenarios in a disposable worktree (recommended)", Group: "Reviews"},
-			{Value: "no", Title: "Only read the code", Hint: "safer for repositories with outside contributors", Group: "Reviews"},
-		}
-		cur := "no"
-		if w.cfg.Verify {
-			cur = "yes"
-		}
-		return choice("Should reviews run the project?", items, cur, "", func(v string) { w.cfg.Verify = v == "yes" })
 	}}
 }
 
@@ -639,7 +625,7 @@ func Run(ctx context.Context, out io.Writer) error {
 	if len(w.cfg.Engines) > 1 {
 		fmt.Fprintf(out, "  strategy   %s\n", w.cfg.Strategy)
 	}
-	fmt.Fprintf(out, "  verify     %v\n  language   %s\n", w.cfg.Verify, w.cfg.Language)
+	fmt.Fprintf(out, "  language   %s\n", w.cfg.Language)
 	if w.cfg.App.ID != 0 {
 		fmt.Fprintf(out, "  posts as   GitHub App %d for `%s`\n", w.cfg.App.ID, w.cfg.Trigger)
 	} else {

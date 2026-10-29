@@ -9,7 +9,7 @@ import (
 )
 
 func TestClaudeCommandIsReadOnlyAndMapsModelAndEffort(t *testing.T) {
-	c, err := BuildCommand(Spec{Name: "claude", Model: "sonnet", Effort: "high"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out", Verify: true})
+	c, err := BuildCommand(Spec{Name: "claude", Model: "sonnet", Effort: "high"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestClaudeCommandIsReadOnlyAndMapsModelAndEffort(t *testing.T) {
 		{"--model", "sonnet"},
 		{"--effort", "high"},
 		{"--permission-mode", "dontAsk"},
-		{"--allowedTools", "Read", "Grep", "Glob", "Bash"},
+		{"--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)"},
 		{"--disallowedTools", "Edit", "Write", "NotebookEdit"},
 	} {
 		if !containsSeq(c.Args, want) {
@@ -32,14 +32,13 @@ func TestClaudeCommandIsReadOnlyAndMapsModelAndEffort(t *testing.T) {
 }
 
 func TestCodexCommandWritesLastMessageToFile(t *testing.T) {
-	c, err := BuildCommand(Spec{Name: "codex", Model: "gpt-5.5", Effort: "xhigh"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out", Verify: true})
+	c, err := BuildCommand(Spec{Name: "codex", Model: "gpt-5.5", Effort: "xhigh"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range [][]string{
 		{"exec"},
-		{"-s", "workspace-write"},
-		{"-c", "sandbox_workspace_write.network_access=true"},
+		{"-s", "read-only"},
 		{"-o", "/tmp/out"},
 		{"-m", "gpt-5.5"},
 		{"-c", `model_reasoning_effort="xhigh"`},
@@ -57,13 +56,13 @@ func TestCodexCommandWritesLastMessageToFile(t *testing.T) {
 }
 
 func TestOpencodeCommandUsesPlanAgentAndVariant(t *testing.T) {
-	c, err := BuildCommand(Spec{Name: "opencode", Model: "anthropic/claude-sonnet", Effort: "high"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out", Verify: true})
+	c, err := BuildCommand(Spec{Name: "opencode", Model: "anthropic/claude-sonnet", Effort: "high"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range [][]string{
 		{"run"},
-		{"--auto"},
+		{"--agent", "plan"},
 		{"--dir", "/wt"},
 		{"-m", "anthropic/claude-sonnet"},
 		{"--variant", "high"},
@@ -82,7 +81,7 @@ func TestOpencodeCommandUsesPlanAgentAndVariant(t *testing.T) {
 
 func TestCopilotCommandUsesHeadlessJSONAndRestrictsWrites(t *testing.T) {
 	c, err := BuildCommand(Spec{Name: "copilot", Model: "gpt-6-luna", Effort: "high"}, Request{
-		Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out", Verify: true,
+		Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,8 +154,9 @@ func TestDefaultModelAndEffortAreOmitted(t *testing.T) {
 	}
 }
 
-func TestReadOnlyModeWhenVerificationIsOff(t *testing.T) {
-	req := Request{Prompt: "p", Dir: "/wt", OutFile: "/tmp/out", Verify: false}
+func TestEveryEngineRunsReadOnly(t *testing.T) {
+	// Otto never runs the project: every engine is in its read-only or plan mode.
+	req := Request{Prompt: "p", Dir: "/wt", OutFile: "/tmp/out"}
 
 	claude, _ := BuildCommand(Spec{Name: "claude"}, req)
 	if slices.Contains(claude.Args, "Bash") {
@@ -299,7 +299,7 @@ func containsSeq(args, seq []string) bool {
 }
 
 func TestCursorCommandRunsHeadlessInTheWorktree(t *testing.T) {
-	c, err := BuildCommand(Spec{Name: "cursor", Model: "sonnet-4-thinking"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out", Verify: true})
+	c, err := BuildCommand(Spec{Name: "cursor", Model: "sonnet-4-thinking"}, Request{Prompt: "review this", Dir: "/wt", OutFile: "/tmp/out"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestCursorCommandRunsHeadlessInTheWorktree(t *testing.T) {
 		t.Errorf("bin = %q, want cursor-agent", c.Bin)
 	}
 	for _, want := range [][]string{
-		{"-p"}, {"--output-format", "json"}, {"--trust"}, {"--force"},
+		{"-p"}, {"--output-format", "json"}, {"--trust"}, {"--mode", "plan"},
 		{"--workspace", "/wt"}, {"--model", "sonnet-4-thinking"},
 	} {
 		if !containsSeq(c.Args, want) {

@@ -23,7 +23,6 @@ type PromptInput struct {
 	Diff                                  string
 	Language                              string
 	Instructions                          string
-	Verify                                bool
 	MaxDiffBytes                          int
 
 	DiffTruncated bool
@@ -32,6 +31,9 @@ type PromptInput struct {
 	// repository. Prior are the findings already made on this pull request and their outcome.
 	Lessons []learn.Lesson
 	Prior   []learn.Record
+
+	// CI describes the pull request's CI checks on the reviewed commit, with failing log excerpts.
+	CI string
 }
 
 // BuildPrompt renders the review harness for one pull request.

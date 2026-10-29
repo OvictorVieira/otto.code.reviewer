@@ -68,16 +68,11 @@ func (w *wizard) identitySummary() string {
 func (w *wizard) stepMenu() step {
 	return step{show: func() (ui, func([]string) *nested) {
 		group := "What do you want to change?"
-		verify := "only read the code"
-		if w.cfg.Verify {
-			verify = "run the project"
-		}
 		items := []picker.Item{
 			{Value: "models", Title: "Models and fallback", Hint: w.engineChain(), Group: group},
 			{Value: "repos", Title: "Repositories to watch", Hint: w.repoSummary(), Group: group},
 			{Value: "identity", Title: "Who posts the reviews", Hint: w.identitySummary(), Group: group},
 			{Value: "language", Title: "Language of the comments", Hint: w.cfg.Language, Group: group},
-			{Value: "verify", Title: "Run the project while reviewing", Hint: verify, Group: group},
 			{Value: "service", Title: "Background service", Hint: "start Otto now and at every login", Group: group},
 			{Value: "full", Title: "Everything (full setup)", Hint: "go through every step", Group: group},
 			{Value: "save", Title: "Save and exit", Group: "Done"},
@@ -88,7 +83,6 @@ func (w *wizard) stepMenu() step {
 			"repos":    {w.stepRepos()},
 			"identity": {w.stepIdentity()},
 			"language": {w.stepLanguage()},
-			"verify":   {w.stepVerify()},
 			"service":  {w.stepService()},
 			"full":     {w.stepRepos(), w.stepEngines()},
 		}

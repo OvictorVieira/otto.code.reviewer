@@ -30,7 +30,6 @@ type Request struct {
 	Prompt   string
 	Dir      string // disposable checkout of the pull request head
 	OutFile  string // scratch file the engine may write its answer to
-	Verify   bool   // allow running commands (install, test, start) inside Dir
 	Progress func(string)
 	// Followup, when set, continues the engine's last session in Dir with this message instead of
 	// starting over: used to ask for the answer an engine finished its work without giving.
@@ -69,9 +68,9 @@ type Command struct {
 	OutputFile string // read after the run when set (codex)
 }
 
-// BuildCommand maps a spec to the CLI flags of each tool. With Verify the
-// engine may run commands inside the disposable checkout; file-editing tools
-// stay disabled either way and the prompt forbids commits and pushes.
+// BuildCommand maps a spec to the CLI flags of each tool. Reviews only read the code: every engine
+// runs in its read-only or plan mode, with file-editing tools disabled, and the prompt forbids
+// commits and pushes. Otto never runs the project; CI results are its evidence of behavior.
 func BuildCommand(s Spec, req Request) (Command, error) {
 	c := Command{Bin: Binary(s.Name), Dir: req.Dir}
 	switch s.Name {
@@ -84,20 +83,12 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		if s.Effort != "" {
 			c.Args = append(c.Args, "--effort", s.Effort)
 		}
-		if req.Verify {
-			c.Args = append(c.Args, "--allowedTools", "Read", "Grep", "Glob", "Bash")
-		} else {
-			c.Args = append(c.Args, "--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)")
-		}
+		c.Args = append(c.Args, "--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)")
 		c.Args = append(c.Args, "--disallowedTools", "Edit", "Write", "NotebookEdit")
 	case "codex":
 		c.Stdin = req.Prompt
 		c.OutputFile = req.OutFile
-		if req.Verify {
-			c.Args = []string{"exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"}
-		} else {
-			c.Args = []string{"exec", "-s", "read-only"}
-		}
+		c.Args = []string{"exec", "-s", "read-only"}
 		c.Args = append(c.Args, "-o", req.OutFile)
 		if s.Model != "" {
 			c.Args = append(c.Args, "-m", s.Model)
@@ -109,11 +100,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 	case "cursor":
 		// Cursor has no effort flag: reasoning depth comes with the model name.
 		c.Args = []string{"-p", "--output-format", "json", "--trust", "--workspace", req.Dir}
-		if req.Verify {
-			c.Args = append(c.Args, "--force")
-		} else {
-			c.Args = append(c.Args, "--mode", "plan")
-		}
+		c.Args = append(c.Args, "--mode", "plan")
 		if s.Model != "" {
 			c.Args = append(c.Args, "--model", s.Model)
 		}
@@ -122,11 +109,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		// The prompt goes on stdin: attaching a large file with -f makes opencode stall before it
 		// reaches the model, while the same text on stdin is answered in seconds.
 		c.Stdin = req.Prompt
-		if req.Verify {
-			c.Args = []string{"run", "--auto"}
-		} else {
-			c.Args = []string{"run", "--agent", "plan"}
-		}
+		c.Args = []string{"run", "--agent", "plan"}
 		c.Args = append(c.Args, "--dir", req.Dir)
 		if s.Model != "" {
 			c.Args = append(c.Args, "-m", s.Model)
@@ -149,9 +132,7 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 			"--deny-tool=shell(git commit)", "--deny-tool=shell(git push)",
 			"--disable-builtin-mcps", "--no-color",
 		}
-		if !req.Verify {
-			c.Args = append(c.Args, "--deny-tool=shell")
-		}
+		c.Args = append(c.Args, "--deny-tool=shell")
 		if s.Model != "" {
 			c.Args = append(c.Args, "--model", s.Model)
 		}

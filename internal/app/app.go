@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/config"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/diff"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
@@ -72,6 +73,7 @@ type App struct {
 	Host      Host
 	Checkouts Checkouts
 	Feedback  Feedback    // nil disables learning
+	CI        ci.Reader   // nil skips the CI evidence
 	Learn     learn.Store // where Otto keeps what it learned, per repository
 	learnMu   sync.Mutex
 	learnBusy int32
@@ -123,6 +125,7 @@ func New(out io.Writer) (*App, error) {
 		Host:        github.CLI{},
 		Checkouts:   gitCheckouts{},
 		Feedback:    github.CLI{},
+		CI:          github.CLI{},
 		Learn:       learn.Store{Dir: filepath.Join(dir, "learning")},
 		NewEngine:   func(s engine.Spec) engine.Engine { return engine.CLI{Spec: s} },
 		Installed:   engine.Installed,
@@ -201,10 +204,11 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	defer wt.Remove()
 
 	lessons, prior := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
+	ciEvidence := a.ciEvidence(ctx, repo, number, pr.HeadRefOid, opt)
 	prompt, err := review.BuildPrompt(review.PromptInput{
 		Repo: repo, URL: pr.URL, Title: pr.Title, Body: pr.Body, Base: pr.BaseRefName, HeadSHA: pr.HeadRefOid,
-		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions, Verify: a.Cfg.Verify,
-		Lessons: lessons, Prior: prior,
+		Files: d.Files(), Diff: rawDiff, Language: a.Cfg.Language, Instructions: opt.Instructions,
+		Lessons: lessons, Prior: prior, CI: ciEvidence,
 	})
 	if err != nil {
 		return Report{}, err
@@ -223,7 +227,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	scratch.Close()
 	defer os.Remove(scratch.Name())
 
-	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s, verify %v)", repo, number, pool.Strategy, a.Cfg.Verify),
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reviewing (strategy %s)", repo, number, pool.Strategy),
 		"Preparando revisão…")
 	accept := func(out string) error { _, err := review.ParseResult(out, wt.Dir()); return err }
 	var progress func(string)
@@ -231,7 +235,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		progress = opt.Progress
 	}
 	outcome, err := pool.Run(ctx, engine.Request{
-		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Verify: a.Cfg.Verify, Progress: progress,
+		Prompt: prompt, Dir: wt.Dir(), OutFile: scratch.Name(), Progress: progress,
 		Contract: review.OutputContract(),
 	}, a.rotation(), accept)
 	if !opt.ShowProgress {
@@ -589,4 +593,22 @@ func specLabel(s engine.Spec) string {
 		label += " · " + s.Effort
 	}
 	return label
+}
+
+// ciEvidence reads the pull request's CI results on the reviewed commit, waiting a while for checks
+// still running. It never blocks a review: when CI cannot be read the review goes on without it.
+func (a *App) ciEvidence(ctx context.Context, repo string, number int, sha string, opt Options) string {
+	if a.CI == nil {
+		return ""
+	}
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: reading CI results of %s", repo, number, short(sha)), "Lendo resultados do CI…")
+	rep, err := ci.Collect(ctx, a.CI, repo, sha, ci.Options{Wait: a.Cfg.CIWait})
+	if err != nil {
+		a.logf("%s#%d: reading CI results failed, reviewing without them: %v", repo, number, err)
+		return ""
+	}
+	if rep.Pending {
+		a.logf("%s#%d: CI still running after %s; reviewing anyway", repo, number, a.Cfg.CIWait)
+	}
+	return ci.Render(rep)
 }

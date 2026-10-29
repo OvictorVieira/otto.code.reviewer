@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
 	"strings"
 	"testing"
 
@@ -216,5 +217,45 @@ func TestReviewLogsTheModelEachEngineRunsWithAndFlagsTheCLIDefault(t *testing.T)
 
 	if got := specLabel(engine.Spec{Name: "opencode", Effort: "medium"}); got != "opencode · CLI default model · medium" {
 		t.Fatalf("an engine with no model must be labelled as the CLI default, got %q", got)
+	}
+}
+
+type fakeCI struct {
+	checks []ci.Check
+	log    string
+}
+
+func (f fakeCI) Checks(context.Context, string, string) ([]ci.Check, error) { return f.checks, nil }
+func (f fakeCI) JobLog(context.Context, string, int64) (string, error)      { return f.log, nil }
+
+func TestReviewGivesTheEngineTheFailingCILogInsteadOfRunningAnything(t *testing.T) {
+	var got engine.Request
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, got: &got})
+	h.app.CI = fakeCI{
+		checks: []ci.Check{{ID: 7, Name: "go test", Status: "completed", Conclusion: "failure", Actions: true}},
+		log:    "--- FAIL: TestReserve (0.01s)\n    stock went negative",
+	}
+
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{"CI results for this commit", "go test: failure", "--- FAIL: TestReserve", "Do not install dependencies, build, run tests"} {
+		if !strings.Contains(got.Prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestReviewTellsTheEngineToCheckTestsForNewBehavior(t *testing.T) {
+	var got engine.Request
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings, got: &got})
+	if _, err := h.app.Review(context.Background(), repo, 1, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"**Tests**: every new or changed behavior", "**Behavior**: for each scenario the spec describes"} {
+		if !strings.Contains(got.Prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
 	}
 }

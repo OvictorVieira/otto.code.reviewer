@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/trigger"
 )
@@ -228,6 +229,40 @@ func RecentPRs(ctx context.Context, repo string, limit int) ([]int, error) {
 	return nums, nil
 }
 
+// Checks lists the CI check runs of a commit.
+func Checks(ctx context.Context, repo, sha string) ([]ci.Check, error) {
+	out, err := gh(ctx, nil, "api", "--paginate", fmt.Sprintf("repos/%s/commits/%s/check-runs?per_page=100", repo, sha),
+		"--jq", `.check_runs[] | {id, name, status, conclusion: (.conclusion // ""), url: .html_url, app: (.app.slug // "")}`)
+	if err != nil {
+		return nil, err
+	}
+	var checks []ci.Check
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var c struct {
+			ID         int64  `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			URL        string `json:"url"`
+			App        string `json:"app"`
+		}
+		if err := dec.Decode(&c); err != nil {
+			return nil, err
+		}
+		checks = append(checks, ci.Check{ID: c.ID, Name: c.Name, Status: c.Status, Conclusion: c.Conclusion,
+			URL: c.URL, Actions: c.App == "github-actions"})
+	}
+	return checks, nil
+}
+
+// JobLog downloads the log of a GitHub Actions job (its id is the check run id).
+func JobLog(ctx context.Context, repo string, jobID int64) (string, error) {
+	// CI logs carry color codes; gh refuses to print them unless told to (they are stripped later).
+	out, err := gh(ctx, nil, "api", "--allow-escape-sequences", fmt.Sprintf("repos/%s/actions/jobs/%d/logs", repo, jobID))
+	return string(out), err
+}
+
 // Repos lists the non-archived repositories the user can access, most
 // recently pushed first.
 func Repos(ctx context.Context) ([]string, error) {
@@ -258,6 +293,12 @@ func (CLI) Threads(ctx context.Context, repo string, n int) ([]learn.Thread, err
 }
 func (CLI) RecentPRs(ctx context.Context, repo string, limit int) ([]int, error) {
 	return RecentPRs(ctx, repo, limit)
+}
+func (CLI) Checks(ctx context.Context, repo, sha string) ([]ci.Check, error) {
+	return Checks(ctx, repo, sha)
+}
+func (CLI) JobLog(ctx context.Context, repo string, id int64) (string, error) {
+	return JobLog(ctx, repo, id)
 }
 func (CLI) Comment(ctx context.Context, repo string, n int, body string) error {
 	return Comment(ctx, repo, n, body)

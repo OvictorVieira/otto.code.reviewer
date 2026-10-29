@@ -186,8 +186,8 @@ func TestPickingAModelThenItsOwnEffortLevelsAndSkippingWhenThereAreNone(t *testi
 	if strings.Contains(d.screen(), "select effort") {
 		t.Errorf("a model without effort levels must skip the effort screen:\n%s", d.screen())
 	}
-	if !strings.Contains(d.screen(), "Should reviews run the project") {
-		t.Errorf("expected to land on the verify step:\n%s", d.screen())
+	if !strings.Contains(d.screen(), "Language of the review comments") {
+		t.Errorf("expected to land on the language step:\n%s", d.screen())
 	}
 }
 
@@ -210,7 +210,6 @@ func finishToIdentity(d *driver) {
 	d.key(tea.KeyEnter)                                        // repos
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter) // opencode
 	d.key(tea.KeyEnter)                                        // model: CLI default (effort is skipped)
-	d.key(tea.KeyEnter)                                        // verify
 	d.key(tea.KeyEnter)                                        // language
 }
 
@@ -264,7 +263,7 @@ func TestFinishingTheLastStepEndsTheProgramAndKeepsEverything(t *testing.T) {
 	if !d.w.finished || d.w.quit {
 		t.Fatalf("finished %v quit %v", d.w.finished, d.w.quit)
 	}
-	if !d.w.cfg.Repos.All || d.w.cfg.Engines[0].Name != "opencode" || !d.w.cfg.Verify || !d.w.service {
+	if !d.w.cfg.Repos.All || d.w.cfg.Engines[0].Name != "opencode" || !d.w.service {
 		t.Errorf("config = %+v", d.w.cfg)
 	}
 }
