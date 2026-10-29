@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.1
+
+- Watching all repositories no longer spends the GitHub API budget: repositories without a push in the last 7 days are polled every 10 minutes instead of every cycle, and learning reads only pull requests updated since its last sweep.
+- When GitHub reports the rate limit, polling stops for the cycle and learning pauses for 15 minutes instead of failing on every repository.
+
 ## v0.2.0
 
 - Reviews are read-only and use CI checks at the reviewed commit as execution evidence. Running checks may be awaited; failed checks include redacted log excerpts.

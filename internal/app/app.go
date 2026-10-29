@@ -39,7 +39,7 @@ type Host interface {
 	Comment(ctx context.Context, repo string, number int, body string) error
 	React(ctx context.Context, repo string, commentID int64, content string) error
 	CommentsSince(ctx context.Context, repo string, since time.Time) ([]trigger.Comment, error)
-	Repos(ctx context.Context) ([]string, error)
+	Repos(ctx context.Context) ([]github.Repo, error)
 }
 
 // Checkout is a disposable working copy of a pull request head.
@@ -82,8 +82,10 @@ type App struct {
 	Learn     learn.Store // where Otto keeps what it learned, per repository
 	learnMu   sync.Mutex
 	learnBusy int32
-	NewEngine func(engine.Spec) engine.Engine
-	Installed func(name string) bool
+	// learnPausedUntil stops background learning for a while after GitHub's rate limit.
+	learnPausedUntil time.Time
+	NewEngine        func(engine.Spec) engine.Engine
+	Installed        func(name string) bool
 
 	// Upgrade installs a newer release when there is one and reports whether
 	// it did. Restart then replaces the process with the new binary.
@@ -393,26 +395,40 @@ func (a *App) Watch(ctx context.Context, once bool) error {
 	queue := newReviewQueue(a, ctx)
 	queue.start()
 	defer queue.stop()
+	var all []github.Repo
 	var repos []string
 	var reposAt time.Time
+	polled := map[string]time.Time{}
 	for {
 		if a.selfUpdate(ctx) || a.restartForChanges(startedAs, configStartedAs) {
 			return nil
 		}
 		if a.Cfg.Repos.All && time.Since(reposAt) > 10*time.Minute {
 			if r, e := a.Host.Repos(ctx); e == nil {
-				repos, reposAt = r, time.Now()
+				all, reposAt = r, time.Now()
+				repos = repos[:0]
+				for _, repo := range all {
+					repos = append(repos, repo.Name)
+				}
 			} else {
 				a.logf("listing repositories failed: %v", e)
 			}
 		} else if !a.Cfg.Repos.All {
 			repos = a.Cfg.Repos.Selected
 		}
-		for _, repo := range repos {
+		due := repos
+		if a.Cfg.Repos.All {
+			due = pollDue(all, polled, time.Now())
+		}
+		for _, repo := range due {
 			if ctx.Err() != nil {
 				return nil
 			}
-			a.poll(ctx, repo, allowed, queue)
+			if a.poll(ctx, repo, allowed, queue) {
+				a.logf("GitHub API rate limit reached; polling again next cycle")
+				break
+			}
+			polled[repo] = time.Now()
 		}
 		go a.learnCycle(ctx, repos)
 		if once {
@@ -516,7 +532,28 @@ func (a *App) selfUpdate(ctx context.Context) bool {
 	return true
 }
 
-func (a *App) poll(ctx context.Context, repo string, allowed []string, q *reviewQueue) {
+const (
+	activeWindow = 7 * 24 * time.Hour // a repository pushed to within this window is polled every cycle
+	dormantEvery = 10 * time.Minute   // other repositories are polled this often
+)
+
+// pollDue picks the repositories to poll this cycle. Watching every repository of an account
+// costs one API call per repository per cycle, which on a large account spends GitHub's hourly
+// budget; repositories nobody pushed to lately are polled less often. Nothing is missed: each
+// poll reads every comment since that repository's cursor.
+func pollDue(repos []github.Repo, polled map[string]time.Time, now time.Time) []string {
+	var due []string
+	for _, r := range repos {
+		if now.Sub(r.Pushed) <= activeWindow || now.Sub(polled[r.Name]) >= dormantEvery {
+			due = append(due, r.Name)
+		}
+	}
+	return due
+}
+
+// poll reads new comments of repo and queues review requests. It reports whether GitHub
+// refused the call for the rate limit, so the cycle stops instead of failing on every repository.
+func (a *App) poll(ctx context.Context, repo string, allowed []string, q *reviewQueue) bool {
 	started := time.Now()
 	a.stateMu.Lock()
 	since := a.State.Cursor(repo, started.Add(-a.Cfg.Lookback)).Add(-2 * time.Minute)
@@ -526,15 +563,18 @@ func (a *App) poll(ctx context.Context, repo string, allowed []string, q *review
 	comments, err := a.Host.CommentsSince(pollCtx, repo, since)
 	cancel()
 	if err != nil {
+		if github.RateLimited(err) {
+			return true
+		}
 		a.logf("%s: reading comments failed: %v", repo, err)
-		return
+		return false
 	}
 	a.stateMu.Lock()
 	requests := trigger.Pending(comments, a.Cfg.Trigger, allowed, func(id int64) bool { return a.State.Done(id) || a.State.Pending[id].CommentID != 0 })
 	a.stateMu.Unlock()
 	for _, req := range requests {
 		if !q.enqueue(req) {
-			return
+			return false
 		}
 	}
 	a.stateMu.Lock()
@@ -543,6 +583,7 @@ func (a *App) poll(ctx context.Context, repo string, allowed []string, q *review
 		a.logf("%s: saving cursor failed: %v", repo, err)
 	}
 	a.stateMu.Unlock()
+	return false
 }
 
 func (a *App) handle(ctx context.Context, req trigger.Request) {

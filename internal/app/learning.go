@@ -10,20 +10,24 @@ import (
 	"time"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
 )
 
 const (
-	sweepEvery     = 30 * time.Minute // how often the watcher re-reads feedback per repository
-	sweepPRs       = 15               // most recently updated pull requests read per sweep
-	distillMinimum = 3                // new signals needed before the watcher updates the lessons
-	distillBatch   = 40               // most signals folded into one update
+	sweepEvery     = 30 * time.Minute   // how often the watcher re-reads feedback per repository
+	sweepPRs       = 15                 // most recently updated pull requests read per sweep
+	firstSweep     = 7 * 24 * time.Hour // how far back the first sweep of a repository looks
+	rateLimitPause = 15 * time.Minute   // how long learning waits after GitHub's rate limit
+	distillMinimum = 3                  // new signals needed before the watcher updates the lessons
+	distillBatch   = 40                 // most signals folded into one update
 )
 
 // Feedback reads how maintainers answered Otto's findings.
 type Feedback interface {
 	Threads(ctx context.Context, repo string, number int) ([]learn.Thread, error)
-	RecentPRs(ctx context.Context, repo string, limit int) ([]int, error)
+	// RecentPRs lists pull requests updated at or after since, newest first.
+	RecentPRs(ctx context.Context, repo string, since time.Time, limit int) ([]int, error)
 }
 
 func (a *App) learningOn() bool {
@@ -78,6 +82,9 @@ func (a *App) learnCycle(ctx context.Context, repos []string) {
 		return
 	}
 	defer atomic.StoreInt32(&a.learnBusy, 0)
+	if time.Now().Before(a.learnPausedUntil) {
+		return
+	}
 	for _, repo := range repos {
 		if ctx.Err() != nil {
 			return
@@ -87,6 +94,11 @@ func (a *App) learnCycle(ctx context.Context, repos []string) {
 			continue
 		}
 		if _, err := a.LearnRepo(ctx, repo, false); err != nil {
+			if github.RateLimited(err) {
+				a.learnPausedUntil = time.Now().Add(rateLimitPause)
+				a.logf("GitHub API rate limit reached; learning resumes in %s", rateLimitPause)
+				return
+			}
 			a.logf("%s: learning failed: %v", repo, err)
 		}
 	}
@@ -117,19 +129,28 @@ func (a *App) LearnRepo(ctx context.Context, repo string, force bool) (LearnSumm
 		sum.Throttle = true
 		return sum, nil
 	}
-	prs, err := a.Feedback.RecentPRs(ctx, repo, sweepPRs)
+	// Only pull requests with activity since the last sweep can carry new feedback; reading the
+	// threads of every recent pull request of every repository spends GitHub's hourly budget.
+	started, since := time.Now(), mem.LastSweep
+	if since.IsZero() || force {
+		since = started.Add(-firstSweep)
+	}
+	prs, err := a.Feedback.RecentPRs(ctx, repo, since, sweepPRs)
 	if err != nil {
 		return sum, err
 	}
 	for _, n := range prs {
 		if _, err := a.collect(ctx, repo, n); err != nil {
+			if github.RateLimited(err) {
+				return sum, err // the sweep is retried whole, so nothing it skipped is lost
+			}
 			a.logf("%s#%d: reading feedback failed: %v", repo, n, err)
 		}
 	}
 	a.learnMu.Lock()
 	mem, err = a.Learn.Load(repo)
 	if err == nil {
-		mem.LastSweep = time.Now()
+		mem.LastSweep = started
 		err = a.Learn.Save(repo, mem)
 	}
 	a.learnMu.Unlock()

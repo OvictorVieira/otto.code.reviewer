@@ -582,9 +582,13 @@ func Run(ctx context.Context, out io.Writer) error {
 		return fmt.Errorf("GitHub CLI is not logged in. Run `gh auth login` first, then `otto setup` again (%w)", err)
 	}
 	fmt.Fprintf(out, "GitHub: logged in as %s. Reviews will be posted as you.\nLoading your repositories...\n", login)
-	repos, err := github.Repos(ctx)
+	found, err := github.Repos(ctx)
 	if err != nil {
 		return err
+	}
+	repos := make([]string, len(found))
+	for i, r := range found {
+		repos[i] = r.Name
 	}
 
 	cfg, menu := openingConfig(config.Load)

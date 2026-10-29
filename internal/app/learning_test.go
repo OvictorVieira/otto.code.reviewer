@@ -6,6 +6,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
@@ -19,13 +20,17 @@ type fakeFeedback struct {
 	prs     []int
 	err     error
 	reads   int
+	since   []time.Time // the since of every RecentPRs call
 }
 
 func (f *fakeFeedback) Threads(_ context.Context, _ string, n int) ([]learn.Thread, error) {
 	f.reads++
 	return f.threads[n], f.err
 }
-func (f *fakeFeedback) RecentPRs(context.Context, string, int) ([]int, error) { return f.prs, nil }
+func (f *fakeFeedback) RecentPRs(_ context.Context, _ string, since time.Time, _ int) ([]int, error) {
+	f.since = append(f.since, since)
+	return f.prs, nil
+}
 
 func rejectedThread() learn.Thread {
 	return learn.Thread{Path: "pkg/a.dart", Line: 4, Resolved: true, Comments: []learn.ThreadComment{
@@ -374,5 +379,60 @@ func TestIssuesOfOtherRepositoriesAreNotRead(t *testing.T) {
 	h.app.Issues = fakeIssues{}
 	if got := h.app.linkedIssues(context.Background(), repo, 1, "See other/private#9"); got != "" {
 		t.Fatalf("another repository's issue must not be read: %q", got)
+	}
+}
+
+func TestASweepReadsOnlyPullRequestsUpdatedSinceTheLastOne(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: distillAnswer})
+	fb := &fakeFeedback{}
+	withLearning(t, h, fb)
+	last := time.Now().Add(-2 * sweepEvery).Truncate(time.Second)
+	mem, _ := h.app.Learn.Load(repo)
+	mem.LastSweep = last
+	_ = h.app.Learn.Save(repo, mem)
+
+	if _, err := h.app.LearnRepo(context.Background(), repo, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fb.since) != 1 || !fb.since[0].Equal(last) {
+		t.Fatalf("since = %v, want the last sweep %v", fb.since, last)
+	}
+	if m, _ := h.app.Learn.Load(repo); !m.LastSweep.After(last) {
+		t.Fatal("the sweep must be remembered")
+	}
+
+	first := newHarness(t, fakeEngine{name: "claude", answer: distillAnswer})
+	fresh := &fakeFeedback{}
+	withLearning(t, first, fresh)
+	if _, err := first.app.LearnRepo(context.Background(), repo, false); err != nil {
+		t.Fatal(err)
+	}
+	if back := time.Since(fresh.since[0]); back < firstSweep-time.Minute || back > firstSweep+time.Minute {
+		t.Fatalf("a first sweep must look back %s, looked back %s", firstSweep, back)
+	}
+}
+
+func TestLearningPausesOnGitHubRateLimitAndRetriesTheWholeSweep(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: distillAnswer})
+	fb := &fakeFeedback{prs: []int{1, 2, 3}, err: errors.New("gh api graphql: exit status 1: gh: API rate limit exceeded for user ID 1.")}
+	withLearning(t, h, fb)
+	h.app.Cfg.Learning = true
+
+	h.app.learnCycle(context.Background(), []string{repo, "me/other"})
+
+	if fb.reads != 1 {
+		t.Fatalf("read %d threads, want to stop at the first refusal", fb.reads)
+	}
+	if m, _ := h.app.Learn.Load(repo); !m.LastSweep.IsZero() {
+		t.Fatal("a sweep cut short must not count, or the feedback it skipped is never read")
+	}
+	if !strings.Contains(h.out.String(), "learning resumes in") {
+		t.Fatalf("log:\n%s", h.out.String())
+	}
+
+	h.app.learnCycle(context.Background(), []string{repo})
+	if fb.reads != 1 || len(fb.since) != 1 {
+		t.Fatal("learning must wait out the pause instead of retrying every cycle")
 	}
 }

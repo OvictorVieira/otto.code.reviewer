@@ -51,14 +51,16 @@ type write struct {
 }
 
 type fakeHost struct {
-	mu          sync.Mutex
-	comments    []trigger.Comment
-	posted      []format.Review
-	rejectFirst bool // reject the first review that has inline comments
-	plain       []string
-	reactions   []reaction
-	writes      []write
-	diff        string // overrides the default one-file diff
+	mu           sync.Mutex
+	comments     []trigger.Comment
+	commentsErr  error
+	commentReads int
+	posted       []format.Review
+	rejectFirst  bool // reject the first review that has inline comments
+	plain        []string
+	reactions    []reaction
+	writes       []write
+	diff         string // overrides the default one-file diff
 }
 
 func (h *fakeHost) Login(context.Context) (string, error) { return "OvictorVieira", nil }
@@ -72,7 +74,9 @@ func (h *fakeHost) Diff(context.Context, string, int) (string, error) {
 	}
 	return prDiff, nil
 }
-func (h *fakeHost) Repos(context.Context) ([]string, error) { return []string{repo}, nil }
+func (h *fakeHost) Repos(context.Context) ([]github.Repo, error) {
+	return []github.Repo{{Name: repo, Pushed: time.Now()}}, nil
+}
 func (h *fakeHost) PostReview(ctx context.Context, _ string, _ int, payload any) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -100,7 +104,10 @@ func (h *fakeHost) React(ctx context.Context, _ string, id int64, content string
 	return nil
 }
 func (h *fakeHost) CommentsSince(context.Context, string, time.Time) ([]trigger.Comment, error) {
-	return h.comments, nil
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.commentReads++
+	return h.comments, h.commentsErr
 }
 
 type fakeCheckout struct {
@@ -863,5 +870,45 @@ func TestWatchResumesPersistedQueueWithoutAnotherGitHubComment(t *testing.T) {
 	}
 	if len(h.host.posted) != 1 || !h.app.State.Done(707) || len(h.app.State.Pending) != 0 {
 		t.Fatalf("review=%d processed=%v pending=%v", len(h.host.posted), h.app.State.Done(707), h.app.State.Pending)
+	}
+}
+
+func TestDormantRepositoriesArePolledLessOften(t *testing.T) {
+	now := time.Now()
+	repos := []github.Repo{
+		{Name: "me/active", Pushed: now.Add(-time.Hour)},
+		{Name: "me/dormant", Pushed: now.Add(-90 * 24 * time.Hour)},
+		{Name: "me/dormant-due", Pushed: now.Add(-90 * 24 * time.Hour)},
+	}
+	polled := map[string]time.Time{
+		"me/active":      now.Add(-time.Minute),
+		"me/dormant":     now.Add(-time.Minute),
+		"me/dormant-due": now.Add(-dormantEvery),
+	}
+
+	got := pollDue(repos, polled, now)
+
+	if strings.Join(got, ",") != "me/active,me/dormant-due" {
+		t.Fatalf("due = %v", got)
+	}
+	if got := pollDue(repos[1:2], map[string]time.Time{}, now); len(got) != 1 {
+		t.Fatal("a repository never polled must be polled on the first cycle")
+	}
+}
+
+func TestPollingStopsTheCycleWhenGitHubRateLimits(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.Repos.Selected = []string{"me/a", "me/b", "me/c"}
+	h.host.commentsErr = errors.New("gh api: exit status 1: API rate limit exceeded for user ID 1.")
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	if h.host.commentReads != 1 {
+		t.Fatalf("read comments %d times, want to stop after the first refusal", h.host.commentReads)
+	}
+	if !strings.Contains(h.out.String(), "rate limit reached") || strings.Contains(h.out.String(), "reading comments failed") {
+		t.Fatalf("log:\n%s", h.out.String())
 	}
 }
