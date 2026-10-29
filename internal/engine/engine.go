@@ -459,6 +459,7 @@ func isQuotaMessage(s string) bool {
 		"credit balance is too low", "insufficient credits", "insufficient_quota", "exceeded your current quota",
 		"resource_exhausted", "resource exhausted", "freeusagelimiterror", "out of credits", "monthly request limit", "too many requests",
 		"status code 429", "http 429", "error 429",
+		"free usage limit",
 	} {
 		if strings.Contains(s, marker) {
 			return true
