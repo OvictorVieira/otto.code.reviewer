@@ -42,6 +42,13 @@ type EngineError struct {
 func (e *EngineError) Error() string { return e.Name + ": " + e.Err.Error() }
 func (e *EngineError) Unwrap() error { return e.Err }
 
+// AllFailed reports whether err is every engine failing, as opposed to a failure around the
+// engines (reading the pull request, posting the review).
+func AllFailed(err error) bool {
+	var all allFailedError
+	return errors.As(err, &all)
+}
+
 // Failures explains, engine by engine, why a pool run failed. It returns nothing
 // for an error that did not come from the engines.
 func Failures(err error) []EngineFailure {

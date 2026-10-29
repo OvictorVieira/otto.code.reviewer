@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,6 +66,103 @@ func gh(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 // for the hour is spent. Every further call then fails too, so callers stop until it resets.
 func RateLimited(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "rate limit")
+}
+
+// Transient reports whether err is a GitHub failure that goes away on its own: the rate limit,
+// a timeout or an unavailable server. A request that failed this way is retried, not reported.
+func Transient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if RateLimited(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"deadline exceeded", "timeout", "timed out", "connection reset", "connection refused",
+		"eof", "bad gateway", "service unavailable", "gateway timeout", "http 502", "http 503", "http 504", "could not resolve host"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// FailureMarker tags the comment Otto posts when a review could not finish, so a later
+// successful review can remove it.
+const FailureMarker = "<!-- otto-review-failure:v1 -->"
+
+// failureTitles also find failure comments posted before the marker existed.
+var failureTitles = []string{"### Otto não conseguiu concluir este review", "### Otto could not finish this review"}
+
+// ClearFailures removes what earlier failed attempts left on a pull request: Otto's failure
+// comments and the 😕 reactions on trigger comments. Only comments and reactions made by
+// login or by a bot are touched, and only Otto's own failure comments are deleted.
+func ClearFailures(ctx context.Context, repo string, number int, login string) error {
+	out, err := gh(ctx, nil, "api", "--paginate", fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repo, number),
+		"--jq", `.[] | {id, body, login: .user.login, type: .user.type, confused: .reactions.confused}`)
+	if err != nil {
+		return err
+	}
+	ours := func(who, kind string) bool { return kind == "Bot" || strings.EqualFold(who, login) }
+	dec := json.NewDecoder(bytes.NewReader(out))
+	var errs []error
+	for dec.More() {
+		var c struct {
+			ID       int64  `json:"id"`
+			Body     string `json:"body"`
+			Login    string `json:"login"`
+			Type     string `json:"type"`
+			Confused int    `json:"confused"`
+		}
+		if err := dec.Decode(&c); err != nil {
+			return err
+		}
+		if ours(c.Login, c.Type) && isFailure(c.Body) {
+			if _, err := gh(ctx, nil, "api", "-X", "DELETE", fmt.Sprintf("repos/%s/issues/comments/%d", repo, c.ID)); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if c.Confused == 0 {
+			continue
+		}
+		rs, err := gh(ctx, nil, "api", fmt.Sprintf("repos/%s/issues/comments/%d/reactions?content=confused", repo, c.ID),
+			"--jq", `.[] | {id, login: .user.login, type: .user.type}`)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		rdec := json.NewDecoder(bytes.NewReader(rs))
+		for rdec.More() {
+			var r struct {
+				ID    int64  `json:"id"`
+				Login string `json:"login"`
+				Type  string `json:"type"`
+			}
+			if err := rdec.Decode(&r); err != nil {
+				return err
+			}
+			if !ours(r.Login, r.Type) {
+				continue
+			}
+			if _, err := gh(ctx, nil, "api", "-X", "DELETE", fmt.Sprintf("repos/%s/issues/comments/%d/reactions/%d", repo, c.ID, r.ID)); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func isFailure(body string) bool {
+	if strings.Contains(body, FailureMarker) {
+		return true
+	}
+	for _, t := range failureTitles {
+		if strings.HasPrefix(strings.TrimSpace(body), t) {
+			return true
+		}
+	}
+	return false
 }
 
 // Login returns the authenticated GitHub user.
@@ -347,6 +445,9 @@ func (CLI) Comment(ctx context.Context, repo string, n int, body string) error {
 }
 func (CLI) PostReview(ctx context.Context, repo string, n int, payload any) error {
 	return PostReview(ctx, repo, n, payload)
+}
+func (CLI) ClearFailures(ctx context.Context, repo string, n int, login string) error {
+	return ClearFailures(ctx, repo, n, login)
 }
 func (CLI) React(ctx context.Context, repo string, id int64, content string) error {
 	return React(ctx, repo, id, content)

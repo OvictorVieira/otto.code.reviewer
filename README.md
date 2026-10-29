@@ -192,10 +192,15 @@ reports a file read, the file path. Otto clears this temporary display when the 
 the final summary. It does not stream private model reasoning or file contents. The background watcher keeps its
 concise log output.
 
+**Temporary GitHub failures** (rate limit, timeout, outage) are retried silently, with nothing posted on the pull
+request; only a request still failing after the lookback window is reported. A successful review removes earlier
+failure comments and 😕 reactions.
+
 **Housekeeping:**
 
 ```bash
 otto service status      # is the background watcher running?
+otto queue               # requests seen but not finished (waiting, under review, retrying)
 otto service uninstall   # stop it
 otto clean               # delete cached clones and worktrees
 tail -f ~/Library/Logs/otto.log

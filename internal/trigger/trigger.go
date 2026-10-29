@@ -26,6 +26,12 @@ type Request struct {
 	CommentID    int64
 	Author       string
 	Instructions string // text after the trigger on the same line
+
+	// Set while a request waits to be retried after a temporary GitHub failure.
+	Seen      time.Time `json:",omitempty"` // when Otto first picked the request up
+	Attempts  int       `json:",omitempty"`
+	RetryAt   time.Time `json:",omitempty"`
+	LastError string    `json:",omitempty"`
 }
 
 var pullURL = regexp.MustCompile(`/pull/(\d+)`)
