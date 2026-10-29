@@ -1021,3 +1021,41 @@ func TestAnEngineTimeoutIsReportedNotRetried(t *testing.T) {
 		t.Fatal("a failed review must not clear failure notices")
 	}
 }
+
+func TestARateLimitedReviewIsRetriedWhenGitHubLiftsTheLimit(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.host.comments = []trigger.Comment{triggerComment(31, "OvictorVieira")}
+	h.host.prErrs = []error{rateLimited}
+	reset := time.Now().Add(37 * time.Minute)
+	h.app.RateLimit = func(context.Context) (time.Time, error) { return reset, nil }
+
+	if err := h.app.Watch(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.app.State.Pending[31].RetryAt
+	if d := got.Sub(reset); d < 0 || d > time.Minute {
+		t.Fatalf("retry at %v, want right after GitHub's reset %v", got, reset)
+	}
+}
+
+func TestPollingWaitsForTheResetInsteadOfCallingAgain(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: noFindings})
+	h.app.Cfg.Repos.Selected = []string{"me/a", "me/b"}
+	h.app.Cfg.PollInterval = time.Millisecond
+	h.host.commentsErr = errors.New("gh api: exit status 1: API rate limit exceeded for user ID 1.")
+	h.app.RateLimit = func(context.Context) (time.Time, error) { return time.Now().Add(time.Hour), nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := h.app.Watch(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if h.host.commentReads != 1 {
+		t.Fatalf("read comments %d times while GitHub refuses until the reset", h.host.commentReads)
+	}
+	if !strings.Contains(h.out.String(), "polling resumes at") {
+		t.Fatalf("log:\n%s", h.out.String())
+	}
+}

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3
+
+- On GitHub's rate limit, Otto asks GitHub when the limit lifts (a call that does not count against it) and waits exactly until then: retried reviews, polling and learning resume right after the reset instead of trying again blindly.
+
 ## v0.2.2
 
 - A review that fails for a temporary GitHub reason (rate limit, timeout, outage) is retried silently, after 5, 10, 20 and then every 30 minutes, instead of posting a failure comment. It is reported only if it still fails after the lookback window (24 hours by default). Engine failures are reported as before.

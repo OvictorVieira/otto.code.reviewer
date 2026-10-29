@@ -68,6 +68,25 @@ func RateLimited(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "rate limit")
 }
 
+// RateLimitReset says when GitHub lifts the rate limit of the logged-in account: the latest
+// reset time among the REST and GraphQL budgets that are spent, or zero when none is. Asking
+// does not count against the limit.
+func RateLimitReset(ctx context.Context) (time.Time, error) {
+	out, err := gh(ctx, nil, "api", "rate_limit",
+		"--jq", `[.resources.core, .resources.graphql] | map(select(.remaining == 0) | .reset) | max // 0`)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var unix int64
+	if _, err := fmt.Sscan(strings.TrimSpace(string(out)), &unix); err != nil {
+		return time.Time{}, err
+	}
+	if unix == 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(unix, 0), nil
+}
+
 // Transient reports whether err is a GitHub failure that goes away on its own: the rate limit,
 // a timeout or an unavailable server. A request that failed this way is retried, not reported.
 func Transient(err error) bool {
