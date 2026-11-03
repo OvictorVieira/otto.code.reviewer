@@ -152,3 +152,27 @@ func TestClaudeCatalogFallsBackWhenHelpChanges(t *testing.T) {
 		t.Errorf("fallback = %+v, want opus, sonnet, haiku with default efforts", models)
 	}
 }
+
+func TestAgyCatalogParsesModelsAndIgnoresFetching(t *testing.T) {
+	out := `Fetching available models...
+gemini-3.8-flash-high	Gemini 3.8 Flash (High)
+gemini-3.8-flash-medium	Gemini 3.8 Flash (Medium)
+gemini-3.8-flash-low	Gemini 3.8 Flash (Low)
+claude-sonnet-4-6	Claude Sonnet 4.6 (Thinking)
+claude-opus-4-6-thinking	Claude Opus 4.6 (Thinking)
+gpt-oss-120b-medium	GPT-OSS 120B (Medium)
+`
+	models := parseAgy(out)
+	if len(models) != 6 {
+		t.Fatalf("len = %d, want 6", len(models))
+	}
+	if models[0].ID != "gemini-3.8-flash-high" || models[0].Name != "Gemini 3.8 Flash (High)" {
+		t.Errorf("model 0 = %+v", models[0])
+	}
+	if !slices.Equal(models[0].Efforts, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("efforts = %v", models[0].Efforts)
+	}
+	if got := Efforts("agy"); !slices.Equal(got, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("Efforts(agy) = %v", got)
+	}
+}

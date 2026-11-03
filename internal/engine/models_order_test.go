@@ -38,6 +38,10 @@ func TestBrandComesFromTheModelNotFromTheRouteItIsServedThrough(t *testing.T) {
 		{"cursor", "composer-2.5", "Cursor"},
 		{"cursor", "auto", "Cursor"},
 		{"cursor", "muse-spark-1.3-low", "Cursor"}, // a brand Otto does not know falls back to the engine
+		{"agy", "gemini-3.8-flash-medium", "Google"},
+		{"agy", "claude-sonnet-4-6", "Anthropic"},
+		{"agy", "gpt-oss-120b-medium", "OpenAI"},
+		{"agy", "custom-model", "Antigravity"},
 	}
 	for _, c := range cases {
 		if got := BrandOf(c.engine, c.id); got != c.want {
@@ -58,6 +62,7 @@ func TestEveryEngineRecommendsModelsThatReallyExistInItsCatalog(t *testing.T) {
 		{"cursor", "claude-haiku-5-5-medium", Light}, {"cursor", "claude-sonnet-5-5-high", Medium}, {"cursor", "claude-opus-5-5-high", Heavy},
 		{"opencode", "openrouter/anthropic/claude-haiku-5.5", Light}, {"opencode", "openrouter/anthropic/claude-sonnet-5.5", Medium}, {"opencode", "openrouter/anthropic/claude-opus-5.5", Heavy},
 		{"copilot", "claude-haiku-5.5", Light}, {"copilot", "claude-sonnet-5.5", Medium}, {"copilot", "claude-opus-5.5", Heavy},
+		{"agy", "gemini-3.8-flash-low", Light}, {"agy", "gemini-3.8-flash-medium", Medium}, {"agy", "gemini-3.8-flash-high", Heavy},
 	}
 	for _, c := range cases {
 		got, ok := RecommendedTier(c.engine, c.id)
@@ -78,6 +83,7 @@ func TestOnlyTheListedModelsAreRecommended(t *testing.T) {
 		{"cursor", "gpt-5.6-sol-high"},
 		{"codex", "gpt-5.6-terra"},
 		{"copilot", "grok-4.7"},
+		{"agy", "gpt-oss-120b-medium"},
 		{"nobody", "sonnet"},
 	} {
 		if tier, ok := RecommendedTier(c.engine, c.id); ok {
@@ -91,7 +97,8 @@ func TestThereAreRecommendationsForLightMediumAndHeavyReviews(t *testing.T) {
 	for _, engine := range Known {
 		for _, id := range []string{"haiku", "sonnet", "opus", "gpt-6-luna", "claude-haiku-5-5-medium", "claude-sonnet-5-5-high", "claude-opus-5-5-high",
 			"openrouter/anthropic/claude-haiku-5.5", "openrouter/anthropic/claude-sonnet-5.5", "openrouter/anthropic/claude-opus-5.5",
-			"claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5"} {
+			"claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5",
+			"gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high"} {
 			if tier, ok := RecommendedTier(engine, id); ok {
 				seen[tier] = true
 			}

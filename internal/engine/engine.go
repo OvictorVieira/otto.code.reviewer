@@ -122,7 +122,7 @@ type Engine interface {
 type Continuer interface{ CanContinue() bool }
 
 // Known lists the supported engines in display order.
-var Known = []string{"claude", "codex", "cursor", "opencode", "copilot"}
+var Known = []string{"claude", "codex", "cursor", "opencode", "copilot", "agy"}
 
 // Binary is the executable each engine runs.
 func Binary(name string) string {
@@ -217,6 +217,20 @@ func BuildCommand(s Spec, req Request) (Command, error) {
 		if s.Effort != "" {
 			c.Args = append(c.Args, "--reasoning-effort", s.Effort)
 		}
+	case "agy":
+		c.Args = []string{
+			"-p", req.Prompt,
+			"--output-format", "json",
+			"--mode", "plan",
+			"--dangerously-skip-permissions",
+			"--disable-slash-commands",
+		}
+		if s.Model != "" {
+			c.Args = append(c.Args, "--model", s.Model)
+		}
+		if s.Effort != "" {
+			c.Args = append(c.Args, "--effort", s.Effort)
+		}
 	default:
 		return Command{}, fmt.Errorf("unknown engine %q (supported: %s)", s.Name, strings.Join(Known, ", "))
 	}
@@ -248,6 +262,26 @@ func ExtractOutput(name, stdout, fileContent string) (string, error) {
 		return stdout, nil
 	case "copilot":
 		return extractCopilotOutput(stdout)
+	case "agy":
+		var r struct {
+			Status   string `json:"status"`
+			Response string `json:"response"`
+			Error    string `json:"error"`
+		}
+		trimmed := strings.TrimSpace(stdout)
+		if idx := strings.Index(trimmed, "{\"conversation_id\""); idx >= 0 {
+			trimmed = trimmed[idx:]
+		}
+		if err := json.Unmarshal([]byte(trimmed), &r); err != nil {
+			return stdout, nil
+		}
+		if r.Status == "ERROR" || r.Error != "" {
+			if r.Error != "" {
+				return "", fmt.Errorf("agy: %s", r.Error)
+			}
+			return "", fmt.Errorf("agy: run failed with status %s", r.Status)
+		}
+		return r.Response, nil
 	default:
 		return stdout, nil
 	}

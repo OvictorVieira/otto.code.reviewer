@@ -337,6 +337,37 @@ func TestCursorResultIsExtractedFromJSON(t *testing.T) {
 	}
 }
 
+func TestAgyCommandRunsInPlanMode(t *testing.T) {
+	c, err := BuildCommand(Spec{Name: "agy", Model: "gemini-3.8-flash-high", Effort: "high"}, Request{Prompt: "review this", Dir: "/wt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Bin != "agy" {
+		t.Errorf("bin = %q, want agy", c.Bin)
+	}
+	for _, want := range [][]string{
+		{"-p", "review this"}, {"--output-format", "json"}, {"--mode", "plan"},
+		{"--dangerously-skip-permissions"}, {"--disable-slash-commands"},
+		{"--model", "gemini-3.8-flash-high"}, {"--effort", "high"},
+	} {
+		if !containsSeq(c.Args, want) {
+			t.Errorf("args %v missing %v", c.Args, want)
+		}
+	}
+}
+
+func TestAgyResultIsExtractedFromJSON(t *testing.T) {
+	out, err := ExtractOutput("agy", `{"conversation_id":"123","status":"SUCCESS","response":"{\"findings\":[]}","duration_seconds":1.2}`, "")
+	if err != nil || out != `{"findings":[]}` {
+		t.Errorf("out = %q, err = %v", out, err)
+	}
+
+	_, err = ExtractOutput("agy", `{"conversation_id":"","status":"ERROR","error":"model not found"}`, "")
+	if err == nil || !strings.Contains(err.Error(), "model not found") {
+		t.Errorf("expected error, got %v", err)
+	}
+}
+
 // worker answers after a while, reporting activity every tick until then (or never, when quiet).
 type worker struct {
 	name  string

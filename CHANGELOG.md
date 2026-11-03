@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.5
+
+- Support Antigravity (`agy`) CLI as an AI review engine with model discovery, effort selection, and safe plan mode.
+
 ## v0.2.4
 
 - A slow OpenCode model is no longer cut off while it works: Otto reads OpenCode's own log, lets it run while it keeps taking steps or reading files, and moves to the next engine only after 5 minutes without any activity. A spent free quota or a provider that gave up is detected at once instead of waiting.

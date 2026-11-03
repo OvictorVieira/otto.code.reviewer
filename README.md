@@ -10,7 +10,7 @@ Comment `/otto review` on a pull request. Otto checks the branch out, reads the 
 results, and posts the review as you: colored `P0`–`P3` findings on the exact lines, a verdict, and the evidence it
 could verify from the repository and CI.
 
-It works with **Claude Code**, **Codex**, **Cursor**, **OpenCode** and **GitHub Copilot CLI**. Use one, or rotate between them so no single
+It works with **Claude Code**, **Codex**, **Cursor**, **OpenCode**, **GitHub Copilot CLI** and **Antigravity (agy)**. Use one, or rotate between them so no single
 plan hits its limit, with automatic fallback when one fails.
 
 ## Installation (60-second setup)
@@ -87,6 +87,17 @@ the CLI default. Premium-model access depends on your GitHub plan, organization 
 a model does not guarantee access. If the CLI rejects the model or your account cannot use it, Otto reports that error
 and tries configured fallback engines. Otto cannot bypass usage limits. For manual reviews, Otto posts reset details
 returned by the provider if all engines fail; it never guesses a reset time.
+
+</details>
+
+<details>
+<summary><strong>Antigravity (agy)</strong></summary>
+
+```bash
+agy models
+```
+
+`otto setup` lists Antigravity's available models and lets you choose a model and reasoning effort.
 
 </details>
 
@@ -250,6 +261,7 @@ engines:
     model: anthropic/claude-sonnet-4
   - name: copilot
     # omit model to use Copilot CLI's default, or set a model ID
+  - name: agy
 ```
 
 </details>
@@ -284,7 +296,7 @@ repos:
   all: false
   selected: [acme/api, acme/web]
 engines:
-  - name: claude             # claude | codex | cursor | opencode | copilot
+  - name: claude             # claude | codex | cursor | opencode | copilot | agy
     model: sonnet            # empty = the CLI's default model
 ```
 
@@ -370,7 +382,7 @@ then makes a pass across the parts. It merges duplicate findings and names any f
   disposable worktree at the PR head
         |
         v
-  engine: claude | codex | cursor | opencode | copilot   (rotation + fallback)
+  engine: claude | codex | cursor | opencode | copilot | agy   (rotation + fallback)
     read spec and repo rules -> trace behavior -> inspect CI -> report findings
         |
         v
@@ -438,7 +450,7 @@ Other options: `--version v0.1.0` installs a specific release, `--no-setup` skip
 
 - macOS for the background service (`otto review` also runs on Linux)
 - [GitHub CLI](https://cli.github.com) and `git`
-- One of: Claude Code, Codex, Cursor, OpenCode or GitHub Copilot CLI
+- One of: Claude Code, Codex, Cursor, OpenCode, GitHub Copilot CLI or Antigravity
 
 GitLab and other hosts are not supported yet.
 

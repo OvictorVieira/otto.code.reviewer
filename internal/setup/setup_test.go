@@ -24,6 +24,9 @@ var catalogs = map[string][]engine.Model{
 	"copilot": {
 		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", Group: "OpenAI", Tag: "Premium", Note: "Uses premium requests; access depends on your Copilot plan and CLI version.", Efforts: []string{"low", "medium", "high", "xhigh"}},
 	},
+	"agy": {
+		{ID: "gemini-3.8-flash-medium", Name: "Gemini 3.8 Flash (Medium)", Group: "Google", Efforts: []string{"low", "medium", "high"}},
+	},
 }
 
 func deps() Deps {
@@ -151,6 +154,20 @@ func TestCopilotListsPremiumModelsAndAllowsTypingOtherIds(t *testing.T) {
 	}
 	if strings.Contains(d.screen(), "select effort") {
 		t.Fatalf("the effort is picked per pull request, never in setup:\n%s", d.screen())
+	}
+}
+
+func TestAgyListsModels(t *testing.T) {
+	d := start(t)
+	d.key(tea.KeyEnter) // repositories
+	// claude(0), codex(1), cursor(2), opencode(3), copilot(4), agy(5)
+	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter)
+
+	if screen := d.screen(); !strings.Contains(screen, "Gemini 3.8 Flash (Medium)") || !strings.Contains(screen, "agy · select model") {
+		t.Fatalf("agy picker should show its models:\n%s", screen)
+	}
+	if got := d.w.cfg.Engines; len(got) != 1 || got[0].Name != "agy" {
+		t.Fatalf("engines = %+v, want only agy", got)
 	}
 }
 

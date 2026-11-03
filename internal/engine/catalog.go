@@ -75,6 +75,14 @@ func catalog(name string) []Model {
 		return parseOpencode(out)
 	case "copilot":
 		return copilotModels()
+	case "agy":
+		out, err := command(20*time.Second, "agy", "models")
+		if err == nil {
+			if models := parseAgy(out); len(models) > 0 {
+				return models
+			}
+		}
+		return agyFallbackModels()
 	}
 	return nil
 }
@@ -129,6 +137,8 @@ func Efforts(name string) []string {
 		return []string{"minimal", "low", "medium", "high", "max"}
 	case "copilot":
 		return []string{"low", "medium", "high", "xhigh"}
+	case "agy":
+		return []string{"low", "medium", "high", "xhigh", "max"}
 	}
 	return nil // cursor: reasoning comes with the model name
 }
@@ -339,6 +349,49 @@ func parseOpencode(out string) []Model {
 		return models[i].ID < models[j].ID
 	})
 	return models
+}
+
+func parseAgy(out string) []Model {
+	efforts := []string{"low", "medium", "high", "xhigh", "max"}
+	var models []Model
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "Fetching") {
+			continue
+		}
+		f := strings.Fields(trimmed)
+		if len(f) > 0 && modelID.MatchString(f[0]) {
+			id := f[0]
+			name := strings.TrimSpace(trimmed[len(id):])
+			if name == "" {
+				name = id
+			}
+			label := id
+			if name != id {
+				label += " — " + name
+			}
+			models = append(models, Model{
+				ID:      id,
+				Label:   label,
+				Name:    name,
+				Group:   "Antigravity",
+				Efforts: efforts,
+			})
+		}
+	}
+	return models
+}
+
+func agyFallbackModels() []Model {
+	efforts := []string{"low", "medium", "high", "xhigh", "max"}
+	return []Model{
+		{ID: "gemini-3.8-flash-high", Name: "Gemini 3.8 Flash (High)", Group: "Google", Efforts: efforts},
+		{ID: "gemini-3.8-flash-medium", Name: "Gemini 3.8 Flash (Medium)", Group: "Google", Efforts: efforts},
+		{ID: "gemini-3.8-flash-low", Name: "Gemini 3.8 Flash (Low)", Group: "Google", Efforts: efforts},
+		{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6 (Thinking)", Group: "Anthropic", Efforts: efforts},
+		{ID: "claude-opus-4-6-thinking", Name: "Claude Opus 4.6 (Thinking)", Group: "Anthropic", Efforts: efforts},
+		{ID: "gpt-oss-120b-medium", Name: "GPT-OSS 120B (Medium)", Group: "OpenAI", Efforts: efforts},
+	}
 }
 
 // CachedLevels returns a lookup of the effort levels a model accepts, reading each engine's model

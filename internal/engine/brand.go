@@ -25,8 +25,13 @@ var cursorBrand = []struct{ prefix, brand string }{
 	{"kimi", "Moonshot AI"}, {"glm", "Z.ai"},
 }
 
-// BrandOf says whose model it is, for engines that list models from many makers: opencode and
-// cursor. A maker Otto does not know falls back to the engine's own name, never to a guess.
+// agyBrand maps the start of an agy model id to its maker.
+var agyBrand = []struct{ prefix, brand string }{
+	{"gemini", "Google"}, {"claude", "Anthropic"}, {"gpt", "OpenAI"},
+}
+
+// BrandOf says whose model it is, for engines that list models from many makers: opencode,
+// cursor and agy. A maker Otto does not know falls back to the engine's own name, never to a guess.
 func BrandOf(engineName, id string) string {
 	switch engineName {
 	case "opencode":
@@ -38,6 +43,13 @@ func BrandOf(engineName, id string) string {
 			}
 		}
 		return "Cursor"
+	case "agy":
+		for _, b := range agyBrand {
+			if strings.HasPrefix(id, b.prefix) {
+				return b.brand
+			}
+		}
+		return "Antigravity"
 	}
 	return ""
 }

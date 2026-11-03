@@ -35,7 +35,7 @@ const usage = `otto: local code reviewer for GitHub pull requests
 Usage:
   otto setup                          configure repositories, engines and the background service
   otto review <pr-url> [flags]        review one pull request now
-      --engine claude|codex|cursor|opencode|copilot   use only this engine
+      --engine claude|codex|cursor|opencode|copilot|agy   use only this engine
       --dry-run                       print the review instead of posting it
       --focus "text"                  extra instructions for the reviewer
   otto watch [--once]                 poll repositories and answer the trigger comment
@@ -44,7 +44,7 @@ Usage:
   otto lessons <owner/repo> [pin|unpin|disable|enable|forget <id>]
                                       show or edit what Otto learned about a repository
   otto eval models [flags] [model ...]  evaluate models against three planted review bugs
-      --engine opencode|claude|codex|cursor|copilot   engine to evaluate (default: opencode)
+      --engine opencode|claude|codex|cursor|copilot|agy   engine to evaluate (default: opencode)
       --timeout 4m                   time limit per model
       --parallel 4                   maximum simultaneous models
   otto service install|uninstall|status

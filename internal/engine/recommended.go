@@ -46,6 +46,7 @@ var recommended = []struct {
 	{"opencode", Light, "openrouter/anthropic/claude-haiku-5.5", false}, {"opencode", Medium, "openrouter/anthropic/claude-sonnet-5.5", false}, {"opencode", Heavy, "openrouter/anthropic/claude-opus-5.5", false},
 	{"opencode", Light, "openrouter/cohere/north-mini-code:free", true}, {"opencode", Medium, "opencode/big-pickle", true}, {"opencode", Heavy, "openrouter/thinkingmachines/inkling:free", true},
 	{"copilot", Light, "claude-haiku-5.5", false}, {"copilot", Medium, "claude-sonnet-5.5", false}, {"copilot", Heavy, "claude-opus-5.5", false},
+	{"agy", Light, "gemini-3.8-flash-low", false}, {"agy", Medium, "gemini-3.8-flash-medium", false}, {"agy", Heavy, "gemini-3.8-flash-high", false},
 }
 
 // RecommendedTier says which size of review the model is recommended for, if it is.
