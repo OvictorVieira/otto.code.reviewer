@@ -156,6 +156,8 @@ type fakeEngine struct {
 	onRun   func()
 	got     *engine.Request
 	callLog *[]string
+	// reply, when set, answers by prompt (a review and the judge's check get different answers).
+	reply func(prompt string) string
 }
 
 func (e fakeEngine) Name() string { return e.name }
@@ -168,6 +170,9 @@ func (e fakeEngine) Run(_ context.Context, req engine.Request) (string, error) {
 	}
 	if e.onRun != nil {
 		e.onRun()
+	}
+	if e.reply != nil {
+		return e.reply(req.Prompt), e.err
 	}
 	return e.answer, e.err
 }

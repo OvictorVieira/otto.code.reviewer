@@ -59,7 +59,7 @@ func TestPromptCarriesLessonsAndPriorFindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"What you have learned", "[avoid] Do not flag test helpers in lib.", "Why: only used by tests",
-		"Findings you already made", "[rejected] P3 Move helper (a.dart)", "Reply: Won't fix. tree-shaken"} {
+		"Findings you already made", "[rejected] P3 Move helper (a.dart)", "Author's reply: Won't fix. tree-shaken"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("prompt missing %q", want)
 		}

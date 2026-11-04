@@ -224,7 +224,7 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 	a.reviewStatus(opt, fmt.Sprintf("%s#%d: size %s", repo, number, size.Summary()), fmt.Sprintf("Tamanho do PR: %s", size.Tier))
 	opt.Instructions = instructions
 
-	lessons, prior := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
+	lessons, prior, seen := a.learningContext(ctx, repo, number, d.Files(), pr.Title)
 	ciEvidence := a.ciEvidence(ctx, repo, number, pr.HeadRefOid, opt)
 	in := review.PromptInput{
 		Repo: repo, URL: pr.URL, Title: pr.Title, Body: pr.Body, Base: pr.BaseRefName, HeadSHA: pr.HeadRefOid,
@@ -278,6 +278,8 @@ func (a *App) Review(ctx context.Context, repo string, number int, opt Options) 
 		meta.Engine, meta.Model, meta.Effort = spec.Name, spec.Model, spec.Effort
 	}
 
+	decisions := a.judge(ctx, opt, wt.Dir(), repo, number, result, seen)
+	result = a.reconcile(repo, number, result, seen, decisions)
 	placement := review.Place(result, d, a.Cfg.MinConfidence)
 	if opt.PostToken != "" || opt.RefreshPostToken {
 		meta.Requester = opt.Requester

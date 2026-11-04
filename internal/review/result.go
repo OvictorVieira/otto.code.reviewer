@@ -23,6 +23,25 @@ type Finding struct {
 	Path       string
 	Start      int
 	End        int
+	// FollowUp is the GitHub id of the earlier finding this one comes back to: the author answered or
+	// changed the code and Otto, after re-checking, found it still not resolved (or the change
+	// introduced a new problem). Zero for a finding about something new.
+	FollowUp int64
+}
+
+// Verdicts of a re-check of an earlier finding.
+const (
+	Satisfied   = "satisfied"   // the fix or the author's reason holds: Otto stays quiet
+	Unsatisfied = "unsatisfied" // the problem is still there: Otto writes a new comment
+	Unclear     = "unclear"
+)
+
+// Recheck is Otto's judgement of one earlier finding against the current code and the author's answer.
+type Recheck struct {
+	Ref     int64 // GitHub id of the earlier finding
+	Verdict string
+	Reason  string
+	Title   string // filled by the caller from the earlier finding, for display
 }
 
 // Check is one command the engine ran to verify the change.
@@ -44,6 +63,7 @@ type Result struct {
 	Findings     []Finding
 	Verification []Check
 	Spec         []SpecCheck
+	Rechecks     []Recheck
 	Correct      bool
 	Explanation  string
 	Confidence   float64
@@ -128,7 +148,45 @@ func (r *flexRange) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// flexRef is the id of an earlier finding written as 20, "20", "ref 20", "#20" or "F20".
+type flexRef int64
+
+func (r *flexRef) UnmarshalJSON(b []byte) error {
+	var n float64
+	if json.Unmarshal(b, &n) == nil {
+		*r = flexRef(n)
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		if d := firstNumber.FindString(s); d != "" {
+			v, _ := strconv.ParseInt(d, 10, 64)
+			*r = flexRef(v)
+		}
+	}
+	return nil
+}
+
+type wireRecheck struct {
+	Ref     flexRef `json:"ref"`
+	Verdict string  `json:"verdict"`
+	Reason  string  `json:"reason"`
+}
+
+// recheckVerdict maps the words models use onto Otto's three verdicts.
+func recheckVerdict(s string) string {
+	switch v := strings.ToLower(strings.TrimSpace(s)); v {
+	case "satisfied", "resolved", "addressed", "fixed", "ok", "holds", "accepted":
+		return Satisfied
+	case "unsatisfied", "not satisfied", "unresolved", "not resolved", "still open", "not fixed", "persists", "still present":
+		return Unsatisfied
+	default:
+		return Unclear
+	}
+}
+
 type wireFinding struct {
+	FollowsUp    flexRef      `json:"follows_up"`
 	Title        string       `json:"title"`
 	Body         string       `json:"body"`
 	Confidence   flexNumber   `json:"confidence_score"`
@@ -182,6 +240,7 @@ type wireResult struct {
 	Findings           []wireFinding
 	Verification       []Check
 	SpecChecks         []wireSpec
+	Rechecks           []wireRecheck
 	OverallCorrectness string
 	OverallExplanation string
 	OverallConfidence  flexNumber
@@ -203,6 +262,7 @@ func decodeWire(probe map[string]json.RawMessage) (wireResult, bool) {
 	}
 	_ = json.Unmarshal(probe["verification"], &w.Verification)
 	_ = json.Unmarshal(probe["spec_checks"], &w.SpecChecks)
+	_ = json.Unmarshal(probe["rechecks"], &w.Rechecks)
 	_ = json.Unmarshal(probe["overall_correctness"], &w.OverallCorrectness)
 	_ = json.Unmarshal(probe["overall_explanation"], &w.OverallExplanation)
 	_ = json.Unmarshal(probe["overall_confidence_score"], &w.OverallConfidence)
@@ -231,8 +291,14 @@ func ParseResult(output, repoRoot string) (Result, error) {
 	for _, spec := range wire.SpecChecks {
 		r.Spec = append(r.Spec, spec.check())
 	}
+	for _, c := range wire.Rechecks {
+		if c.Ref != 0 {
+			r.Rechecks = append(r.Rechecks, Recheck{Ref: int64(c.Ref), Verdict: recheckVerdict(c.Verdict), Reason: strings.TrimSpace(c.Reason)})
+		}
+	}
 	for _, w := range wire.Findings {
 		f := Finding{
+			FollowUp:   int64(w.FollowsUp),
 			Body:       strings.TrimSpace(w.Body),
 			Confidence: float64(w.Confidence),
 			Priority:   2,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/ci"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -448,5 +449,203 @@ func TestLearningWaitsUntilGitHubSaysTheLimitLifts(t *testing.T) {
 
 	if d := h.app.learnPausedUntil.Sub(reset); d < 0 || d > time.Minute {
 		t.Fatalf("paused until %v, want GitHub's reset %v", h.app.learnPausedUntil, reset)
+	}
+}
+
+func stockThread(reply string) learn.Thread {
+	body := "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reserve stock atomically**\n\n" +
+		"Two orders can oversell when they run at the same time.\n\nUseful? React with 👍 / 👎.\n\n<!-- otto-review-finding:v1 -->"
+	return learn.Thread{Path: "stock.go", Line: 2, Comments: []learn.ThreadComment{
+		{ID: 20, Body: body},
+		{ID: 21, Author: "OvictorVieira", Body: reply},
+	}}
+}
+
+func TestReviewNeverRepeatsAFindingTheAuthorAlreadyRejected(t *testing.T) {
+	// The engine ignores the prompt and says the rejected finding again, reworded.
+	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+	h.app.Cfg.Learning = true
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || !report.Posted {
+		t.Fatalf("review failed: %v %+v", err, report)
+	}
+	r := h.host.posted[0]
+	if report.Findings != 0 || len(r.Comments) != 0 {
+		t.Fatalf("a rejected finding was posted again: %+v", r.Comments)
+	}
+	if !strings.Contains(r.Body, "Bravo") || !strings.Contains(r.Body, "patch is correct") {
+		t.Fatalf("with only repeats left the receipt must be clean:\n%s", r.Body)
+	}
+}
+
+func TestReviewStillPostsAFindingThatIsNewOnTheSameFile(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: findingOnLine2})
+	other := stockThread("Won't fix.")
+	other.Comments[0].Body = strings.Replace(other.Comments[0].Body, "Reserve stock atomically", "Rename helper", 1)
+	other.Comments[0].Body = strings.Replace(other.Comments[0].Body, "Two orders can oversell when they run at the same time.", "The name is vague.", 1)
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {other}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 1 || len(h.host.posted[0].Comments) != 1 {
+		t.Fatalf("a different finding must still be posted: %v %+v", err, report)
+	}
+}
+
+// followUpAnswer is an engine answer that re-checks the earlier finding (ref 20) and, because the
+// author's reply does not answer it, comes back to it.
+func followUpAnswer(verdict string, followsUp int) string {
+	return `{"findings":[{"follows_up":` + strconv.Itoa(followsUp) + `,"title":"[P1] Reserve stock atomically","body":"You said stock is locked upstream, but Reserve still reads then writes without the lock.",
+"confidence_score":0.9,"priority":1,"code_location":{"absolute_file_path":"stock.go","line_range":{"start":2,"end":2}}}],
+"rechecks":[{"ref":20,"verdict":"` + verdict + `","reason":"read stock.go: no lock taken"}],
+"overall_correctness":"patch is incorrect","overall_explanation":"Still racy.","overall_confidence_score":0.8}`
+}
+
+func TestReviewWritesANewCommentWhenTheAuthorsAnswerDoesNotSatisfy(t *testing.T) {
+	h := newHarness(t, fakeEngine{name: "claude", answer: followUpAnswer("unsatisfied", 20)})
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 1 {
+		t.Fatalf("the follow-up must be posted: %v %+v", err, report)
+	}
+	r := h.host.posted[0]
+	if len(r.Comments) != 1 || !strings.Contains(r.Comments[0].Body, "followup:20") || !strings.Contains(r.Comments[0].Body, "Follow-up to an earlier finding") {
+		t.Fatalf("follow-up must be a new comment that names what it follows:\n%v", r.Comments)
+	}
+	if strings.Contains(r.Body, "Bravo") || !strings.Contains(r.Body, "Earlier findings re-checked") {
+		t.Fatalf("summary:\n%s", r.Body)
+	}
+}
+
+func TestReviewStaysSilentWhenTheAuthorsReasonHolds(t *testing.T) {
+	// The engine judged the reason valid, yet still listed the finding with a follow-up ref.
+	h := newHarness(t, fakeEngine{name: "claude", answer: followUpAnswer("satisfied", 20)})
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 0 || len(h.host.posted[0].Comments) != 0 {
+		t.Fatalf("a satisfied finding must not be repeated: %v %+v", err, report)
+	}
+	body := h.host.posted[0].Body
+	if !strings.Contains(body, "Bravo") || !strings.Contains(body, "✅ Reserve stock atomically (satisfied)") {
+		t.Fatalf("the receipt must be clean and show what was re-checked:\n%s", body)
+	}
+}
+
+func TestReviewDoesNotPressAFollowUpTheAuthorAlreadyRejected(t *testing.T) {
+	followed := stockThread("Won't fix. stock is locked upstream.")
+	again := learn.Thread{Path: "stock.go", Line: 2, Comments: []learn.ThreadComment{
+		{ID: 30, Body: strings.Replace(followed.Comments[0].Body, "<!-- otto-review-finding:v1 -->", "<!-- otto-review-finding:v1 followup:20 -->", 1)},
+		{ID: 31, Author: "OvictorVieira", Body: "Won't fix. Already explained."},
+	}}
+	h := newHarness(t, fakeEngine{name: "claude", answer: followUpAnswer("unsatisfied", 20)})
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {followed, again}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 0 || len(h.host.posted[0].Comments) != 0 {
+		t.Fatalf("a third round on the same finding is a loop: %v %+v", err, report)
+	}
+}
+
+func TestReviewTurnsARepeatIntoAFollowUpOnlyWhenTheRecheckSaysUnsatisfied(t *testing.T) {
+	// No follows_up on the finding, but the re-check of the same earlier finding says unsatisfied.
+	answer := strings.Replace(followUpAnswer("unsatisfied", 20), `"follows_up":20,`, "", 1)
+	h := newHarness(t, fakeEngine{name: "claude", answer: answer})
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 1 || !strings.Contains(h.host.posted[0].Comments[0].Body, "followup:20") {
+		t.Fatalf("got %v %+v", err, report)
+	}
+}
+
+// judged answers a review with reviewAnswer and the judge's check with judgeAnswer.
+func judged(reviewAnswer, judgeAnswer string, judgeCalls *int) fakeEngine {
+	return fakeEngine{name: "claude", reply: func(prompt string) string {
+		if strings.Contains(prompt, "last check of a code reviewer") {
+			*judgeCalls++
+			return judgeAnswer
+		}
+		return reviewAnswer
+	}}
+}
+
+func TestJudgeLetsANewProblemThroughEvenWhenItsWordsLookLikeAnOldOne(t *testing.T) {
+	calls := 0
+	h := newHarness(t, judged(findingOnLine2, `{"decisions":[{"candidate":0,"relation":"new","reason":"different defect"}]}`, &calls))
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || calls != 1 || report.Findings != 1 {
+		t.Fatalf("judge said new, so it must be posted: %v calls=%d %+v", err, calls, report)
+	}
+	if strings.Contains(h.host.posted[0].Comments[0].Body, "followup") {
+		t.Fatal("a new problem is not a follow-up")
+	}
+}
+
+func TestJudgeSilencesARepeatInOtherWordsWhenTheReasonHolds(t *testing.T) {
+	calls := 0
+	reworded := `{"findings":[{"title":"[P2] Race between two buyers","body":"Concurrent checkouts may both succeed for the last unit.",
+"confidence_score":0.9,"priority":2,"code_location":{"absolute_file_path":"stock.go","line_range":{"start":2,"end":2}}}],
+"overall_correctness":"patch is incorrect","overall_explanation":"race","overall_confidence_score":0.8}`
+	h := newHarness(t, judged(reworded, `{"decisions":[{"candidate":0,"relation":"same","ref":20,"verdict":"satisfied","reason":"stock.go:2 takes the upstream lock"}]}`, &calls))
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 0 {
+		t.Fatalf("a settled finding in new words must stay quiet: %v %+v", err, report)
+	}
+	if !strings.Contains(h.host.posted[0].Body, "Bravo") || !strings.Contains(h.host.posted[0].Body, "stock.go:2 takes the upstream lock") {
+		t.Fatalf("receipt:\n%s", h.host.posted[0].Body)
+	}
+}
+
+func TestJudgeTurnsAnUnsettledRepeatIntoAFollowUpEvenInOtherWords(t *testing.T) {
+	calls := 0
+	reworded := `{"findings":[{"title":"[P2] Race between two buyers","body":"Concurrent checkouts may both succeed for the last unit.",
+"confidence_score":0.9,"priority":2,"code_location":{"absolute_file_path":"stock.go","line_range":{"start":2,"end":2}}}],
+"overall_correctness":"patch is incorrect","overall_explanation":"race","overall_confidence_score":0.8}`
+	h := newHarness(t, judged(reworded, `{"decisions":[{"candidate":0,"relation":"same","ref":20,"verdict":"unsatisfied","reason":"no lock in stock.go"}]}`, &calls))
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if err != nil || report.Findings != 1 || !strings.Contains(h.host.posted[0].Comments[0].Body, "followup:20") {
+		t.Fatalf("an unsettled finding must come back as a follow-up: %v %+v", err, report)
+	}
+}
+
+func TestJudgeSeesTheAuthorsReplyAndFallsBackToWordMatchingWhenItFails(t *testing.T) {
+	calls := 0
+	var prompt string
+	eng := judged(findingOnLine2, `not json at all`, &calls)
+	inner := eng.reply
+	eng.reply = func(p string) string {
+		if strings.Contains(p, "last check of a code reviewer") {
+			prompt = p
+		}
+		return inner(p)
+	}
+	h := newHarness(t, eng)
+	withLearning(t, h, &fakeFeedback{threads: map[int][]learn.Thread{1: {stockThread("Won't fix. stock is locked upstream.")}}})
+
+	report, err := h.app.Review(context.Background(), repo, 1, Options{})
+
+	if !strings.Contains(prompt, "Author's reply: Won't fix. stock is locked upstream.") || !strings.Contains(prompt, "ref 20 [rejected]") {
+		t.Fatalf("judge prompt must carry the earlier finding and the reply:\n%s", prompt)
+	}
+	if err != nil || report.Findings != 0 {
+		t.Fatalf("with the judge down, a rewording of a rejected finding must still be dropped: %v %+v", err, report)
 	}
 }

@@ -98,14 +98,35 @@ That description{{ if .Issues }} plus the linked issues{{ end }} is the **spec**
 
 # Findings you already made on this pull request
 
-The author has seen these. Do not repeat a finding that was accepted and fixed, rejected with a reason that holds,
-or is still open. Report one again only if the problem is still present after the author's change and the reason
-given does not answer it.
+You, or a reviewer before you, already commented on this pull request. The author has seen these comments. Their
+threads are usually closed by now, so you cannot reply in them: anything you say again is a new comment.
+
+Each entry below has a `ref`, its status, what was said, and the author's replies (the reasoning). Review like a
+real reviewer who comes back after the author answered:
+
+1. **Re-check every entry against the code as it is now**, and write the verdict in `rechecks` (see Output).
+   - `[accepted]` or a reply like "Fixed in <sha>": read the changed code. Did the change remove the problem, and
+     did it add a new one?
+   - `[rejected]` / `[replied]`: weigh the author's reason. It holds when the behavior is intentional, out of scope,
+     already guarded elsewhere or the fix would be over-engineering. It does not hold when it is factually wrong
+     or ignores the problem.
+   - `[resolved]` with no reply: the author closed it without saying why. Look at the code before deciding.
+   - `[open]`: its comment is still on the pull request. Do not post it again; verdict `unsatisfied` if it still
+     applies.
+2. **Satisfied means silent.** If the fix or the reason holds, say nothing about it in `findings`. Never repeat a
+   finding, reworded or on a nearby line, because the author disagreed with it or already dealt with it.
+3. **Unsatisfied means a new comment.** If the problem is still there after the author's answer or change, or the
+   change introduced a new problem, add a finding with `follows_up` set to the `ref`. Its body must say what the
+   author did (their reply or what changed in the code), and what is still wrong now, in new words and with the
+   current evidence. Say it once: a finding with `follows_up` is dropped when the entry is open, was already
+   followed up, or your verdict for it is not `unsatisfied`.
+4. Everything else in your findings must be about something not in this list.
 
 <<<UNTRUSTED {{ .Fence }}
 {{- range .Prior }}
-- [{{ .Outcome }}] P{{ .Priority }} {{ .Title }} ({{ .Path }}){{ range .Notes }}
-  Reply: {{ . }}{{ end }}
+- ref {{ .ID }} [{{ .Outcome }}] P{{ .Priority }} {{ .Title }} ({{ .Path }}{{ if .Line }}:{{ .Line }}{{ end }}){{ if .FollowsUp }} (already a follow-up of ref {{ .FollowsUp }}){{ end }}
+  Said: {{ .Body }}{{ range .Notes }}
+  Author's reply: {{ . }}{{ end }}
 {{- end }}
 UNTRUSTED {{ .Fence }}>>>
 {{- end }}
@@ -181,6 +202,7 @@ Answer with exactly this JSON object, without markdown fences:
 {
   "findings": [
     {
+      "follows_up": 0,
       "title": "[P1] <imperative title>",
       "body": "<one paragraph>",
       "confidence_score": 0.0,
@@ -190,6 +212,9 @@ Answer with exactly this JSON object, without markdown fences:
         "line_range": {"start": 1, "end": 1}
       }
     }
+  ],
+  "rechecks": [
+    {"ref": 0, "verdict": "satisfied | unsatisfied", "reason": "<one line: what you checked in the current code>"}
   ],
   "verification": [
     {"command": "<what you ran>", "result": "passed | failed | skipped", "note": "<one line>"}
@@ -201,6 +226,9 @@ Answer with exactly this JSON object, without markdown fences:
   "overall_explanation": "<1 to 3 sentences justifying the verdict>",
   "overall_confidence_score": 0.0
 }
+
+`follows_up` is the `ref` of the earlier finding a finding comes back to, or 0 for a new problem.
+`rechecks` has one entry per earlier finding listed above, and is empty when none were listed.
 
 "Correct" means existing code and tests will not break and the patch has no blocking bugs.
 Non-blocking issues (style, typos, docs) do not make a patch incorrect.

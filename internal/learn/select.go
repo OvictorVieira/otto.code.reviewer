@@ -13,8 +13,8 @@ import (
 const (
 	LessonBudget = 1600
 	LessonMax    = 12
-	PriorBudget  = 1200
-	PriorMax     = 8
+	PriorBudget  = 3000
+	PriorMax     = 10
 	staleAfter   = 120 * 24 * time.Hour // unreinforced, unpinned lessons older than this stop being injected
 )
 
@@ -116,19 +116,23 @@ func SelectLessons(lessons []Lesson, files []string, title string, now time.Time
 	return out
 }
 
-// SelectPrior keeps the earlier findings on this pull request that still change what
-// Otto should say: rejected or answered ones (with the maintainers' words) and ones still open.
-// Accepted or resolved findings are fixed already and cost nothing to leave out.
+// SelectPrior lists the earlier findings on this pull request so Otto does not say them again:
+// rejected or answered ones (with the maintainers' words) first, then open ones, then
+// fixed or resolved ones, within a fixed budget. The budget only limits the hint in the prompt;
+// IsRepeat drops repeats from the answer whether or not they fit here.
 func SelectPrior(recs []Record) []Record {
 	var keep []Record
 	for _, r := range recs {
-		if r.Outcome == Rejected || r.Outcome == Open || r.Outcome == Replied {
+		if r.Outcome == Rejected || r.Outcome == Open || r.Outcome == Replied || r.Outcome == Accepted || r.Outcome == Resolved {
 			keep = append(keep, r)
 		}
 	}
 	rank := func(o Outcome) int { // findings the maintainers answered come first
-		if o == Open {
+		switch o {
+		case Open:
 			return 1
+		case Accepted, Resolved:
+			return 2
 		}
 		return 0
 	}
@@ -142,13 +146,16 @@ func SelectPrior(recs []Record) []Record {
 	used := 0
 	for _, r := range keep {
 		r.Title = clip(r.Title, 100)
-		if len(r.Notes) > 1 {
-			r.Notes = r.Notes[:1]
+		r.Body = clip(strings.Join(strings.Fields(r.Body), " "), 280)
+		if len(r.Notes) > 2 { // the first reply (usually the verdict) and the latest one
+			r.Notes = []string{r.Notes[0], r.Notes[len(r.Notes)-1]}
 		}
-		for i := range r.Notes {
-			r.Notes[i] = clip(strings.Join(strings.Fields(r.Notes[i]), " "), 160)
+		notes := make([]string, len(r.Notes)) // do not edit the caller's slice
+		for i, n := range r.Notes {
+			notes[i] = clip(strings.Join(strings.Fields(n), " "), 240)
 		}
-		cost := len(r.Title) + len(r.Path) + 24
+		r.Notes = notes
+		cost := len(r.Title) + len(r.Body) + len(r.Path) + 48
 		for _, n := range r.Notes {
 			cost += len(n)
 		}

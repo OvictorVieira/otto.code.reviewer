@@ -156,6 +156,7 @@ func Merge(results []review.Result) review.Result {
 			}
 			out.Findings = append(out.Findings, f)
 		}
+		out.Rechecks = mergeRechecks(out.Rechecks, r.Rechecks)
 		for _, c := range r.Verification {
 			if k := c.Command + "|" + c.Result; !seenCheck[k] {
 				seenCheck[k] = true
@@ -219,4 +220,26 @@ func words(s string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// mergeRechecks combines the re-checks of several parts. A part sees only some files, so one that
+// found the problem still there outweighs another that did not look at it.
+func mergeRechecks(into, more []review.Recheck) []review.Recheck {
+	rank := map[string]int{review.Unclear: 0, review.Satisfied: 1, review.Unsatisfied: 2}
+	for _, c := range more {
+		found := false
+		for i := range into {
+			if into[i].Ref != c.Ref {
+				continue
+			}
+			found = true
+			if rank[c.Verdict] > rank[into[i].Verdict] {
+				into[i] = c
+			}
+		}
+		if !found {
+			into = append(into, c)
+		}
+	}
+	return into
 }

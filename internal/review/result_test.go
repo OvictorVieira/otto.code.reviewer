@@ -1,6 +1,8 @@
 package review
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -246,5 +248,55 @@ func TestParseStillRejectsAnObjectThatIsNotAReview(t *testing.T) {
 		if _, err := ParseResult(out, "/r"); err == nil {
 			t.Errorf("ParseResult(%q) accepted something that is not a review", out)
 		}
+	}
+}
+
+func TestParseResultReadsFollowUpsAndRechecks(t *testing.T) {
+	out := `{"findings":[{"follows_up":"ref 20","title":"[P1] Still racy","body":"b","confidence_score":0.9,
+"code_location":{"absolute_file_path":"a.go","line_range":{"start":2,"end":2}}}],
+"rechecks":[{"ref":20,"verdict":"Still open","reason":"no lock"},{"ref":"#21","verdict":"fixed","reason":"guarded"},{"ref":22,"verdict":"maybe"}],
+"overall_correctness":"patch is incorrect"}`
+
+	r, err := ParseResult(out, "")
+
+	if err != nil || len(r.Findings) != 1 || r.Findings[0].FollowUp != 20 {
+		t.Fatalf("follow-up not read: %v %+v", err, r.Findings)
+	}
+	want := []Recheck{{Ref: 20, Verdict: Unsatisfied, Reason: "no lock"}, {Ref: 21, Verdict: Satisfied, Reason: "guarded"}, {Ref: 22, Verdict: Unclear}}
+	if len(r.Rechecks) != 3 || r.Rechecks[0] != want[0] || r.Rechecks[1] != want[1] || r.Rechecks[2] != want[2] {
+		t.Fatalf("rechecks = %+v", r.Rechecks)
+	}
+}
+
+func TestParseJudgeRequiresACompleteConsistentAnswer(t *testing.T) {
+	refs := map[int64]bool{20: true}
+	ok := `{"decisions":[{"candidate":0,"relation":"new"},{"candidate":1,"relation":"same","ref":"20","verdict":"Still open","reason":"r"}]}`
+	got, err := ParseJudge(ok, 2, refs)
+	if err != nil || !got[0].New || got[1].Ref != 20 || got[1].Verdict != Unsatisfied || got[1].Reason != "r" {
+		t.Fatalf("got %+v err=%v", got, err)
+	}
+	for name, bad := range map[string]string{
+		"missing candidate": `{"decisions":[{"candidate":0,"relation":"new"}]}`,
+		"unknown ref":       `{"decisions":[{"candidate":0,"relation":"new"},{"candidate":1,"relation":"same","ref":99,"verdict":"satisfied"}]}`,
+		"same, no verdict":  `{"decisions":[{"candidate":0,"relation":"new"},{"candidate":1,"relation":"same","ref":20}]}`,
+		"no relation":       `{"decisions":[{"candidate":0},{"candidate":1,"relation":"new"}]}`,
+		"not json":          `sorry`,
+	} {
+		if _, err := ParseJudge(bad, 2, refs); err == nil {
+			t.Errorf("%s: must be rejected so the engine is asked again", name)
+		}
+	}
+}
+
+func TestCodeAroundNumbersLinesAndStaysInsideTheCheckout(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("one\ntwo\nthree\nfour\nfive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CodeAround(dir, "a.go", 3, 1); got != "    2| two\n    3| three\n    4| four" {
+		t.Errorf("got %q", got)
+	}
+	if got := CodeAround(dir, "../a.go", 1, 1); got != "" {
+		t.Errorf("a path outside the checkout must give nothing, got %q", got)
 	}
 }
