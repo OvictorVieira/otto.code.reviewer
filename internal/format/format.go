@@ -55,8 +55,14 @@ func Badge(priority int) string {
 
 // InlineBody is the markdown of one inline comment.
 func InlineBody(f review.Finding) string {
-	return fmt.Sprintf("**%s  %s**\n\n%s\n\nUseful? React with 👍 / 👎.\n\n<!-- otto-review-finding:v1 -->",
-		Badge(f.Priority), f.Title, f.Body)
+	marker, intro := "<!-- otto-review-finding:v1 -->", ""
+	if f.FollowUp != 0 {
+		// The earlier thread is usually closed, so this is a new comment that says what it follows.
+		marker = fmt.Sprintf("<!-- otto-review-finding:v1 followup:%d -->", f.FollowUp)
+		intro = "_Follow-up to an earlier finding, after the author's answer or change._\n\n"
+	}
+	return fmt.Sprintf("**%s  %s**\n\n%s%s\n\nUseful? React with 👍 / 👎.\n\n%s",
+		Badge(f.Priority), f.Title, intro, f.Body, marker)
 }
 
 // Comment is one inline comment in the GitHub "create review" payload.
@@ -158,6 +164,24 @@ func Summary(commitSHA string, p review.Placement, r review.Result, m Meta) stri
 		b.WriteString("\n#### Findings outside the diff\n\n")
 		for _, f := range p.Outside {
 			fmt.Fprintf(&b, "- %s **%s** (`%s:%d`)\n  %s\n", Badge(f.Priority), f.Title, f.Path, f.Start, f.Body)
+		}
+	}
+
+	if len(r.Rechecks) > 0 {
+		b.WriteString("\n#### Earlier findings re-checked\n\n")
+		for _, c := range r.Rechecks {
+			icon := "❔"
+			switch c.Verdict {
+			case review.Satisfied:
+				icon = "✅"
+			case review.Unsatisfied:
+				icon = "↩️"
+			}
+			title := c.Title
+			if title == "" {
+				title = fmt.Sprintf("finding %d", c.Ref)
+			}
+			fmt.Fprintf(&b, "- %s %s (%s)%s\n", icon, title, c.Verdict, note(c.Reason))
 		}
 	}
 

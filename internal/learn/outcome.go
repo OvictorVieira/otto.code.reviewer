@@ -5,6 +5,7 @@ package learn
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -58,10 +59,13 @@ type Record struct {
 	Notes    []string  `json:"notes,omitempty"` // human replies, the reasoning Otto learns from
 	Seen     time.Time `json:"seen"`
 	Learned  bool      `json:"learned,omitempty"` // already folded into the lessons
+	// FollowsUp is the id of the earlier finding this one came back to, after the author answered it.
+	FollowsUp int64 `json:"follows_up,omitempty"`
 }
 
 var (
 	ottoComment = regexp.MustCompile(`img\.shields\.io/badge/P([0-3])-`)
+	followMark  = regexp.MustCompile(`otto-review-finding:v1 followup:(\d+)`)
 	badgeHTML   = regexp.MustCompile(`<sub><sub>.*?</sub></sub>`)
 	fixedReply  = regexp.MustCompile(`(?i)^\s*(fixed|done|addressed|corrigid|resolvid)`)
 	rejectReply = regexp.MustCompile(`(?i)(won'?t fix|wontfix|will not fix|already rejected|not applicable|n[aã]o vou corrigir|rejeitad)`)
@@ -89,6 +93,9 @@ func Extract(repo string, pr int, threads []Thread, now time.Time, trusted ...fu
 		rec := Record{
 			Repo: repo, PR: pr, ID: first.ID, Path: t.Path, Line: t.Line,
 			Priority: int(m[1][0] - '0'), Title: title, Body: body, Seen: now,
+		}
+		if f := followMark.FindStringSubmatch(first.Body); f != nil {
+			rec.FollowsUp, _ = strconv.ParseInt(f[1], 10, 64)
 		}
 		var replies []string
 		for _, c := range t.Comments[1:] {

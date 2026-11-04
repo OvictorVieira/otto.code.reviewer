@@ -328,8 +328,21 @@ Otto gets better at your repository the way a developer does: by reading how you
   does it on demand.
 - **What it uses, without growing the prompt:** before each review Otto brings in only the lessons that match the
   changed files (a lesson can be scoped to a path glob), ranked by relevance and evidence, inside a fixed budget
-  (about 400 tokens). On a pull request it was already asked to review, it also remembers its earlier findings that
-  were rejected (with your reason) or are still open, and skips the ones already fixed.
+  (about 400 tokens).
+- **It does not nag you on the same pull request.** When Otto reviews a pull request again, it remembers every earlier
+  finding there (fixed, rejected, answered, resolved or still open) and re-checks each one against the code as it is
+  now and what you replied, like a reviewer coming back after you answered:
+  - If your fix works, or your reason holds (intentional, already guarded elsewhere, out of scope, not worth it),
+    Otto stays quiet. It never repeats a finding you already settled, even in other words.
+  - If it does not (the problem is still in the code, your reason is wrong about the code, or the fix broke something
+    else), Otto writes a **new comment** that says it is a follow-up and what is still wrong. Your old thread is
+    usually closed by then, so it cannot reply there. It follows up once: if you reject the follow-up too, it lets go.
+  - A finding that is still open is never posted twice.
+  - The deciding is done by a separate check by one of your engines, which reads the earlier finding, your reply and
+    the code. If no engine can do it, Otto falls back to matching wording and only repeats a finding when its own
+    re-check says it is still unresolved.
+  - The summary lists what was re-checked (✅ settled, ↩️ followed up), and a review with nothing left to say is a
+    clean "Bravo".
 - **You stay in control:** `otto lessons owner/repo` lists them; `pin`, `disable`, `enable` or `forget` an id.
   Pinned lessons are never dropped. Turn it off with `learning: false` in `config.yaml`.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.6
+
+- Otto no longer repeats findings you already settled on a pull request. A separate check by one of your engines reads each earlier finding, your reply and the current code, and decides whether a new finding is really new, a repeat you settled (silent), or something your answer or change did not settle (a new follow-up comment, once). Without an engine for that check, Otto falls back to wording matching and stays quiet when unsure.
+- A review that has nothing left to say after that is a clean "Bravo", and the summary lists the earlier findings that were re-checked.
+- On a pull request it already reviewed, Otto now lists up to 10 earlier findings with your replies in the prompt, including fixed and resolved ones.
+
 ## v0.2.5
 
 - Support Antigravity (`agy`) CLI as an AI review engine with model discovery, effort selection, and safe plan mode.

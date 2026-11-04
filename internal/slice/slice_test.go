@@ -110,3 +110,18 @@ func TestDifferentProblemsOnTheSameLinesAreBothKept(t *testing.T) {
 		t.Fatalf("findings = %+v", m.Findings)
 	}
 }
+
+func TestMergeKeepsTheStrictestRecheckAcrossParts(t *testing.T) {
+	a := review.Result{Correct: true, Rechecks: []review.Recheck{{Ref: 1, Verdict: review.Satisfied}, {Ref: 2, Verdict: review.Unclear}}}
+	b := review.Result{Correct: true, Rechecks: []review.Recheck{{Ref: 1, Verdict: review.Unsatisfied, Reason: "still racy"}, {Ref: 3, Verdict: review.Satisfied}}}
+
+	got := Merge([]review.Result{a, b})
+
+	verdicts := map[int64]string{}
+	for _, c := range got.Rechecks {
+		verdicts[c.Ref] = c.Verdict
+	}
+	if len(got.Rechecks) != 3 || verdicts[1] != review.Unsatisfied || verdicts[2] != review.Unclear || verdicts[3] != review.Satisfied {
+		t.Fatalf("rechecks = %+v", got.Rechecks)
+	}
+}

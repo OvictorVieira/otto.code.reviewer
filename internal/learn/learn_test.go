@@ -252,7 +252,7 @@ func TestSelectLessonsDropsStaleUnreinforcedButKeepsPinned(t *testing.T) {
 	}
 }
 
-func TestSelectPriorKeepsOnlyRejectedAndOpenAndClipsReasons(t *testing.T) {
+func TestSelectPriorListsEverythingAlreadyReviewedAnsweredFirstAndClipsReasons(t *testing.T) {
 	long := strings.Repeat("because ", 80)
 	recs := []Record{
 		{ID: 1, Outcome: Accepted, Title: "fixed already"},
@@ -261,11 +261,11 @@ func TestSelectPriorKeepsOnlyRejectedAndOpenAndClipsReasons(t *testing.T) {
 		{ID: 4, Outcome: Rejected, Priority: 3, Title: "rejected", Notes: []string{long, "second"}},
 	}
 	got := SelectPrior(recs)
-	if len(got) != 2 || got[0].Outcome != Rejected || got[1].Outcome != Open {
+	if len(got) != 4 || got[0].Outcome != Rejected || got[1].Outcome != Open || got[2].Outcome != Accepted || got[3].Outcome != Resolved {
 		t.Fatalf("got %+v", got)
 	}
-	if len(got[0].Notes) != 1 || len([]rune(got[0].Notes[0])) > 161 {
-		t.Fatalf("reason not clipped: %d", len(got[0].Notes[0]))
+	if len(got[0].Notes) != 2 || len([]rune(got[0].Notes[0])) > 241 {
+		t.Fatalf("reasons not clipped: %d", len(got[0].Notes))
 	}
 }
 
@@ -288,5 +288,53 @@ func TestSelectPriorKeepsAnsweredFindingsBeforeOpenOnes(t *testing.T) {
 	})
 	if len(got) != 2 || got[0].Outcome != Replied {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestMatchFindsRewordedFindingsInTheSameFileWhateverTheirOutcome(t *testing.T) {
+	old := Record{Path: "a.go", Line: 10, Title: "Reserve stock atomically", Body: "Two orders can oversell under concurrency."}
+	for _, o := range []Outcome{Rejected, Accepted, Replied, Resolved, Open} {
+		old.Outcome = o
+		if _, ok := Match("a.go", 12, "Stock reservation is not atomic", "Two orders can oversell under concurrent requests.", []Record{old}); !ok {
+			t.Errorf("a reworded finding must be a repeat of a %s one", o)
+		}
+	}
+}
+
+func TestMatchIgnoresOtherFilesAndOtherProblems(t *testing.T) {
+	old := Record{Path: "a.go", Line: 10, Title: "Reserve stock atomically", Body: "Two orders can oversell under concurrency."}
+	if _, ok := Match("b.go", 10, "Reserve stock atomically", "Two orders can oversell under concurrency.", []Record{old}); ok {
+		t.Error("the same words in another file are a different finding")
+	}
+	if _, ok := Match("a.go", 10, "Missing nil check", "The config pointer is dereferenced before it is validated.", []Record{old}); ok {
+		t.Error("an unrelated finding in the same file is new")
+	}
+}
+
+func TestCanFollowUpOnlyOnceAndNeverOnAnOpenFinding(t *testing.T) {
+	rejected := Record{ID: 1, Outcome: Rejected}
+	if !CanFollowUp(rejected, []Record{rejected}) {
+		t.Error("a rejected finding may be followed up once")
+	}
+	if CanFollowUp(Record{ID: 2, Outcome: Open}, nil) {
+		t.Error("an open finding is still on the pull request: no new comment")
+	}
+	pressed := []Record{rejected, {ID: 3, FollowsUp: 1, Outcome: Rejected}}
+	if CanFollowUp(rejected, pressed) {
+		t.Error("the follow-up was rejected too: asking again is a loop")
+	}
+	if !CanFollowUp(rejected, []Record{rejected, {ID: 3, FollowsUp: 1, Outcome: Accepted}}) {
+		t.Error("a follow-up the author accepted does not block checking that fix")
+	}
+	if CanFollowUp(Record{ID: 3, FollowsUp: 1, Outcome: Rejected}, nil) {
+		t.Error("a follow-up the author rejected gets no third round")
+	}
+}
+
+func TestExtractReadsWhichFindingAFollowUpComesBackTo(t *testing.T) {
+	body := "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Still racy**\n\ntext\n\n<!-- otto-review-finding:v1 followup:20 -->"
+	recs := Extract("o/r", 1, []Thread{{Path: "a.go", Comments: []ThreadComment{{ID: 30, Body: body}}}}, now)
+	if len(recs) != 1 || recs[0].FollowsUp != 20 || recs[0].Title != "Still racy" {
+		t.Fatalf("got %+v", recs)
 	}
 }

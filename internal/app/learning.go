@@ -12,6 +12,7 @@ import (
 	"github.com/OvictorVieira/otto.code.reviewer/internal/engine"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/github"
 	"github.com/OvictorVieira/otto.code.reviewer/internal/learn"
+	"github.com/OvictorVieira/otto.code.reviewer/internal/review"
 )
 
 const (
@@ -59,20 +60,189 @@ func (a *App) collect(ctx context.Context, repo string, pr int) (learn.Memory, e
 // Only a small, relevant slice is injected so the prompt does not grow as Otto learns:
 // lessons are filtered by the changed files and ranked within a fixed budget, and earlier
 // findings are reduced to the ones that still matter (see learn.SelectLessons/SelectPrior).
-func (a *App) learningContext(ctx context.Context, repo string, pr int, files []string, title string) ([]learn.Lesson, []learn.Record) {
+//
+// seen is every earlier finding on this pull request, unbudgeted: the prompt only hints at them,
+// so Review also uses seen to drop any repeat from the engine's answer.
+func (a *App) learningContext(ctx context.Context, repo string, pr int, files []string, title string) (lessons []learn.Lesson, prior, seen []learn.Record) {
 	if !a.learningOn() {
-		return nil, nil
+		return nil, nil, nil
 	}
 	mem, err := a.collect(ctx, repo, pr)
 	if err != nil {
 		a.logf("%s#%d: reading feedback failed, reviewing with what is remembered: %v", repo, pr, err)
 	}
-	lessons := learn.SelectLessons(mem.Lessons, files, title, time.Now())
-	prior := learn.SelectPrior(mem.ForPR(pr))
+	lessons = learn.SelectLessons(mem.Lessons, files, title, time.Now())
+	seen = mem.ForPR(pr)
+	prior = learn.SelectPrior(seen)
 	if len(lessons)+len(prior) > 0 {
 		a.logf("%s#%d: bringing %d of %d lesson(s) and %d earlier finding(s) into the review", repo, pr, len(lessons), len(learn.Active(mem.Lessons)), len(prior))
 	}
-	return lessons, prior
+	return lessons, prior, seen
+}
+
+const (
+	judgeEarlierMax = 30 // earlier findings shown to the judge
+	judgeCodeRadius = 6  // lines of code shown around each finding
+)
+
+// judge asks an engine to decide, with the code and the author's replies in front of it, which of the
+// review's findings are really new, which repeat something the author already settled, and which come
+// back to something the author's answer or change did not settle. Word matching cannot tell a reworded
+// repeat from a new problem next to an old one; reading the code can. It returns nil when there is
+// nothing to judge or no engine could (reconcile then falls back to its stricter word matching).
+func (a *App) judge(ctx context.Context, opt Options, dir, repo string, pr int, r review.Result, seen []learn.Record) []review.Decision {
+	if len(seen) == 0 || len(r.Findings) == 0 {
+		return nil
+	}
+	in := review.JudgeInput{}
+	known := map[int64]bool{}
+	for _, rec := range seen {
+		if len(in.Earlier) == judgeEarlierMax {
+			break
+		}
+		known[rec.ID] = true
+		e := review.JudgeEarlier{
+			Ref: rec.ID, Status: string(rec.Outcome), Title: rec.Title, Said: rec.Body,
+			Location: fmt.Sprintf("%s:%d", rec.Path, rec.Line), Code: review.CodeAround(dir, rec.Path, rec.Line, judgeCodeRadius),
+		}
+		if rec.FollowsUp != 0 {
+			e.Title += fmt.Sprintf(" (a follow-up Otto already made to ref %d)", rec.FollowsUp)
+		}
+		e.Replies = append(e.Replies, rec.Notes...)
+		in.Earlier = append(in.Earlier, e)
+	}
+	for i, f := range r.Findings {
+		in.Candidates = append(in.Candidates, review.JudgeCandidate{
+			Index: i, Title: f.Title, Body: f.Body, Claims: f.FollowUp,
+			Location: fmt.Sprintf("%s:%d-%d", f.Path, f.Start, f.End), Code: review.CodeAround(dir, f.Path, f.Start, judgeCodeRadius),
+		})
+	}
+	prompt, err := review.BuildJudgePrompt(in)
+	if err != nil {
+		a.logf("%s#%d: checking findings against earlier ones failed: %v", repo, pr, err)
+		return nil
+	}
+	pool, err := a.pool(opt.Engine, opt, engine.Heavy)
+	if err != nil {
+		a.logf("%s#%d: checking findings against earlier ones failed: %v", repo, pr, err)
+		return nil
+	}
+	scratch, err := os.CreateTemp("", "otto-judge-*.txt")
+	if err != nil {
+		return nil
+	}
+	scratch.Close()
+	defer os.Remove(scratch.Name())
+	a.reviewStatus(opt, fmt.Sprintf("%s#%d: checking %d finding(s) against %d earlier one(s)", repo, pr, len(r.Findings), len(in.Earlier)),
+		"Conferindo achados com as respostas do autor…")
+	var decisions []review.Decision
+	accept := func(out string) error {
+		d, err := review.ParseJudge(out, len(r.Findings), known)
+		decisions = d
+		return err
+	}
+	if _, err := pool.Run(ctx, engine.Request{Prompt: prompt, Dir: dir, OutFile: scratch.Name()}, a.rotation(), accept); err != nil {
+		a.logf("%s#%d: no engine could check findings against earlier ones, using word matching: %v", repo, pr, err)
+		return nil
+	}
+	return decisions
+}
+
+// reconcile applies what Otto owes the author about the findings it already made on this pull
+// request, before anything is posted. decisions are the judge's calls (nil when it did not run):
+//
+//   - A finding the judge calls new is posted.
+//   - A finding the judge calls the same as an earlier one is posted only if the author's answer or
+//     change did not settle it, and the earlier finding can be followed up (see learn.CanFollowUp).
+//     The earlier thread is usually closed, so it is a new comment that names what it follows.
+//   - Without a judge, a finding that restates an earlier one (by wording) is dropped, unless the
+//     review's own re-check says that earlier one is unsatisfied and may be followed up.
+//   - The re-checks are kept for the summary, so the author sees what was verified.
+func (a *App) reconcile(repo string, pr int, r review.Result, seen []learn.Record, decisions []review.Decision) review.Result {
+	if len(seen) == 0 {
+		return r
+	}
+	byID := map[int64]learn.Record{}
+	for _, rec := range seen {
+		byID[rec.ID] = rec
+	}
+	verdict := map[int64]string{}
+	reason := map[int64]string{}
+	order := []int64{}
+	note := func(ref int64, v, why string, override bool) {
+		if _, ok := byID[ref]; !ok {
+			return
+		}
+		prev, had := verdict[ref]
+		if !had {
+			order = append(order, ref)
+		}
+		if !had || override || (v == review.Unsatisfied && prev != review.Unsatisfied) {
+			verdict[ref], reason[ref] = v, why
+		}
+	}
+	for _, c := range r.Rechecks {
+		note(c.Ref, c.Verdict, c.Reason, false)
+	}
+	for _, d := range decisions {
+		if !d.New {
+			note(d.Ref, d.Verdict, d.Reason, true)
+		}
+	}
+
+	var kept []review.Finding
+	for i, f := range r.Findings {
+		ref, explicit, judged := f.FollowUp, f.FollowUp != 0, false
+		if _, known := byID[ref]; !known {
+			ref, explicit = 0, false
+		}
+		if i < len(decisions) && len(decisions) == len(r.Findings) {
+			d := decisions[i]
+			judged = true
+			if d.New {
+				f.FollowUp = 0
+				kept = append(kept, f)
+				continue
+			}
+			ref, explicit = d.Ref, false
+			verdict[ref] = d.Verdict
+		}
+		if ref == 0 {
+			if rec, repeat := learn.Match(f.Path, f.Start, f.Title, f.Body, seen); repeat {
+				ref = rec.ID
+			}
+		}
+		if ref == 0 {
+			f.FollowUp = 0
+			kept = append(kept, f) // about something new
+			continue
+		}
+		rec := byID[ref]
+		v, checked := verdict[ref]
+		switch {
+		case explicit && !checked && !judged:
+			v = review.Unsatisfied // the follow-up itself is the verdict
+		case v != review.Unsatisfied:
+			a.logf("%s#%d: not repeating a finding the author already settled: %s (%s:%d)", repo, pr, f.Title, f.Path, f.Start)
+			continue
+		}
+		if !learn.CanFollowUp(rec, seen) {
+			a.logf("%s#%d: not repeating a finding already answered or followed up: %s (%s:%d)", repo, pr, f.Title, f.Path, f.Start)
+			continue
+		}
+		f.FollowUp = ref
+		kept = append(kept, f)
+	}
+	if len(kept) == 0 && len(r.Findings) > 0 {
+		// The verdict and explanation were about findings the author already dealt with.
+		r.Correct, r.Explanation = true, ""
+	}
+	var checks []review.Recheck
+	for _, ref := range order {
+		checks = append(checks, review.Recheck{Ref: ref, Verdict: verdict[ref], Reason: reason[ref], Title: byID[ref].Title})
+	}
+	r.Findings, r.Rechecks = kept, checks
+	return r
 }
 
 // learnCycle runs in the background of the watcher: it reads recent feedback and
