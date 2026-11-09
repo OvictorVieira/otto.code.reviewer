@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -99,26 +102,93 @@ func TestCodexCatalogHidesModelsCodexHidesItself(t *testing.T) {
 	}
 }
 
-func TestCopilotCatalogIncludesPremiumModelsAndCanBeCustomized(t *testing.T) {
-	models := Catalog("copilot")
-	if len(models) == 0 {
-		t.Fatal("Copilot should list known premium models")
+func TestCopilotCatalogFiltersUnavailableAndUnsupportedModels(t *testing.T) {
+	models, err := parseCopilotModels([]byte(`{"data":[
+		{"id":"gpt-6-luna","name":"GPT-6 Luna","vendor":"OpenAI","model_picker_category":"lightweight",
+		 "model_picker_enabled":false,"supported_endpoints":["/responses"],"policy":{"state":"enabled"},
+		 "capabilities":{"type":"chat","supports":{"reasoning_effort":["high","low"]}}},
+		{"id":"claude-sonnet-5.5","name":"Claude Sonnet 5.5","vendor":"Anthropic","model_picker_category":"versatile",
+		 "model_picker_enabled":true,"supported_endpoints":["/chat/completions"],"policy":{"state":"disabled"}},
+		{"id":"copilot-search-a","name":"Copilot Agent A","supported_endpoints":["/chat/completions"]},
+		{"id":"embedding-model","name":"Embedding","model_picker_category":"lightweight","supported_endpoints":[]},
+		{"id":"new-model","name":"New Model","vendor":"Example","model_picker_category":"versatile",
+		 "model_picker_enabled":true,"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}},
+		{"id":"selectable-model","name":"Selectable Model","vendor":"OpenAI","model_picker_category":"lightweight",
+		 "model_picker_enabled":true,"supported_endpoints":["/responses"],"policy":{"state":"enabled"},
+		 "capabilities":{"type":"chat","supports":{"reasoning_effort":["high","low"]}}}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %+v, want only models enabled in the account's model picker", models)
 	}
 	var ids []string
 	for _, model := range models {
 		ids = append(ids, model.ID)
-		premium := model.Tag == "Premium" || (model.Tier != "" && strings.HasSuffix(model.Tag, "· Premium"))
-		if !premium || !strings.Contains(model.Note, "access depends") {
-			t.Errorf("model should explain premium access limits: %+v", model)
-		}
 	}
-	for _, id := range []string{"gpt-5.3-codex", "claude-sonnet-4.6", "gemini-4-argon", "grok-4.7"} {
-		if !slices.Contains(ids, id) {
-			t.Errorf("Copilot catalog missing %q: %v", id, ids)
+	if slices.Contains(ids, "gpt-6-luna") || !slices.Contains(ids, "new-model") || !slices.Contains(ids, "selectable-model") {
+		t.Errorf("models = %v, want only selectable models", ids)
+	}
+	for _, model := range models {
+		if model.ID == "selectable-model" {
+			if model.Group != "OpenAI" || model.Tag != "Lightweight" ||
+				!slices.Equal(model.Efforts, []string{"low", "high"}) {
+				t.Errorf("model metadata = %+v", model)
+			}
 		}
 	}
 	if got := Efforts("copilot"); !slices.Equal(got, []string{"low", "medium", "high", "xhigh"}) {
 		t.Errorf("efforts = %v", got)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestFetchCopilotModelsUsesAuthenticatedAccountCatalog(t *testing.T) {
+	t.Setenv("GITHUB_COPILOT_INTEGRATION_ID", "otto-test")
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.String() != copilotModelsURL {
+			t.Errorf("request = %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("authorization header was not set")
+		}
+		if req.Header.Get("Copilot-Integration-Id") != "otto-test" {
+			t.Errorf("integration id = %q", req.Header.Get("Copilot-Integration-Id"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-6-luna","name":"GPT-6 Luna","vendor":"OpenAI","model_picker_category":"lightweight","model_picker_enabled":true,"supported_endpoints":["/responses"]}]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	models, err := fetchCopilotModels(context.Background(), "test-token", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-6-luna" {
+		t.Fatalf("models = %+v", models)
+	}
+}
+
+func TestFetchCopilotModelsUsesDefaultIntegrationID(t *testing.T) {
+	t.Setenv("GITHUB_COPILOT_INTEGRATION_ID", "")
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Copilot-Integration-Id"); got != "vscode-chat" {
+			t.Errorf("integration id = %q, want vscode-chat", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	if _, err := fetchCopilotModels(context.Background(), "test-token", client); err != nil {
+		t.Fatal(err)
 	}
 }
 

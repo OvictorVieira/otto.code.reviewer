@@ -82,11 +82,13 @@ npm install -g @github/copilot
 copilot login
 ```
 
-`otto setup` lists Copilot's supported premium models, and you can also enter a model ID not shown in the list or use
-the CLI default. Premium-model access depends on your GitHub plan, organization policy, and Copilot CLI version; choosing
-a model does not guarantee access. If the CLI rejects the model or your account cannot use it, Otto reports that error
-and tries configured fallback engines. Otto cannot bypass usage limits. For manual reviews, Otto posts reset details
-returned by the provider if all engines fail; it never guesses a reset time.
+`otto setup` fetches the model catalog for the active GitHub CLI account and shows only models enabled in that account's
+model picker and supported by Copilot CLI. Use the same GitHub account for `gh` and `copilot login`; the catalog respects
+the account's plan and organization model policies. Otto does not accept arbitrary Copilot model IDs, but you can always
+choose the CLI default (Copilot Fusion/automatic routing when that is what the plan provides). If a saved model later
+becomes unavailable, Otto retries once with `--model auto` before trying configured fallback engines. Otto cannot bypass
+usage limits. For manual reviews, Otto posts reset details returned by the provider if all engines fail; it never guesses
+a reset time.
 
 </details>
 
@@ -120,7 +122,8 @@ after the review in progress.
 
 **Reading the model list.** The models are read live from each engine, so new ones appear without an Otto release. At the
 top is a **Recommended** section with one model per size of review (light for small or quick pull requests, medium for
-everyday ones, heavy for large or risky changes such as auth, payments or concurrency), then every maker (Anthropic,
+everyday ones, heavy for large or risky changes such as auth, payments or concurrency), when all three recommendations
+are present in the current catalog. Then come every maker (Anthropic,
 OpenAI, DeepSeek, Google...) in alphabetical order, free models first and then from the cheapest to the dearest. Prices are
 shown only when the engine's own catalog gives one. The paid recommendations are maintainer choices; the OpenCode
 free recommendations passed `otto eval models` on the planted-bug fixture. The picks and their evidence live in

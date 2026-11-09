@@ -351,8 +351,8 @@ func (w *wizard) stepModel(i int) step {
 
 			var items []picker.Item
 			for _, free := range []bool{true, false} {
-				_, ok := engine.RecommendedTiers(spec.Name, free)
-				if !ok {
+				tiers, ok := engine.RecommendedTiers(spec.Name, free)
+				if !ok || !containsTierModels(catalog, tiers) {
 					continue
 				}
 				title, value := "Recommended for each size", tiersPaid
@@ -376,10 +376,10 @@ func (w *wizard) stepModel(i int) step {
 					free++
 				}
 			}
-			if spec.Model != "" && !known {
+			if spec.Model != "" && !known && spec.Name != "copilot" {
 				items = append(items, picker.Item{Value: spec.Model, Title: spec.Model, Group: "Current", Tag: "current"})
 			}
-			if len(catalog) == 0 || spec.Name == "copilot" {
+			if len(catalog) == 0 && spec.Name != "copilot" {
 				items = append(items, picker.Item{Value: typeModel, Title: "Type a model id…", Group: "Other"})
 			}
 			footer := fmt.Sprintf("%d models", len(catalog))
@@ -391,6 +391,9 @@ func (w *wizard) stepModel(i int) step {
 			}
 			if len(catalog) == 0 {
 				footer = spec.Name + " did not list any model"
+				if spec.Name == "copilot" {
+					footer = "No individually selectable models loaded; check gh auth/network. CLI default (Copilot Fusion) remains available"
+				}
 			}
 
 			set := func(model string) {
@@ -417,6 +420,15 @@ func (w *wizard) stepModel(i int) step {
 			}
 		},
 	}
+}
+
+func containsTierModels(models []engine.Model, tiers engine.TierModels) bool {
+	for _, id := range []string{tiers.Light, tiers.Medium, tiers.Heavy} {
+		if !slices.ContainsFunc(models, func(model engine.Model) bool { return model.ID == id }) {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *wizard) stepStrategy() step {

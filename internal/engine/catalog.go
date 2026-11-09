@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,42 +90,113 @@ func catalog(name string) []Model {
 	return nil
 }
 
-// copilotModels is the published premium catalog; the CLI checks actual access
-// when a selected model is used because availability varies by account and version.
+const copilotModelsURL = "https://api.githubcopilot.com/models"
+
+// copilotModels reads the catalog for the authenticated GitHub account. The API
+// applies the account's plan and organization model policies.
 func copilotModels() []Model {
-	models := []Model{
-		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-5.4-nano", Name: "GPT-5.4 nano", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-6-astra", Name: "GPT-6 Astra", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-6-luna", Name: "GPT-6 Luna", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-6-sol", Name: "GPT-6 Sol", Group: "OpenAI", Tag: "Premium"},
-		{ID: "gpt-6.1-sol", Name: "GPT-6.1 Sol", Group: "OpenAI", Tag: "Premium"},
-		{ID: "claude-fable-5", Name: "Claude Fable 5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-fable-5.1", Name: "Claude Fable 5.1", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-haiku-4.5", Name: "Claude Haiku 4.5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-haiku-5.5", Name: "Claude Haiku 5.5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-opus-4.8", Name: "Claude Opus 4.8", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-opus-4.8-fast", Name: "Claude Opus 4.8 (fast)", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-opus-5", Name: "Claude Opus 5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-opus-5.5", Name: "Claude Opus 5.5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-sonnet-4.6", Name: "Claude Sonnet 4.6", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "claude-sonnet-5.5", Name: "Claude Sonnet 5.5", Group: "Anthropic", Tag: "Premium"},
-		{ID: "gemini-3.8-flash", Name: "Gemini 3.8 Flash", Group: "Google", Tag: "Premium"},
-		{ID: "gemini-4-argon", Name: "Gemini 4 Argon", Group: "Google", Tag: "Premium"},
-		{ID: "mai-code-1.1-flash", Name: "MAI-Code-1.1-Flash", Group: "Microsoft", Tag: "Premium"},
-		{ID: "kimi-k3", Name: "Kimi K3", Group: "Moonshot AI", Tag: "Premium"},
-		{ID: "grok-4.5", Name: "Grok 4.5", Group: "xAI", Tag: "Premium"},
-		{ID: "grok-4.6", Name: "Grok 4.6", Group: "xAI", Tag: "Premium"},
-		{ID: "grok-4.7", Name: "Grok 4.7", Group: "xAI", Tag: "Premium"},
+	token, err := command(10*time.Second, "gh", "auth", "token", "--hostname", "github.com")
+	if err != nil {
+		return nil
 	}
-	for i := range models {
-		models[i].Note = "Uses premium requests; access depends on your Copilot plan and CLI version."
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	models, err := fetchCopilotModels(ctx, token, &http.Client{Timeout: 15 * time.Second})
+	if err != nil {
+		return nil
 	}
 	return models
+}
+
+func fetchCopilotModels(ctx context.Context, token string, client *http.Client) ([]Model, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, copilotModelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	integrationID := strings.TrimSpace(os.Getenv("GITHUB_COPILOT_INTEGRATION_ID"))
+	if integrationID == "" {
+		integrationID = "vscode-chat"
+	}
+	req.Header.Set("Copilot-Integration-Id", integrationID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Copilot model catalog returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	return parseCopilotModels(body)
+}
+
+func parseCopilotModels(data []byte) ([]Model, error) {
+	var catalog struct {
+		Data []struct {
+			ID                 string   `json:"id"`
+			Name               string   `json:"name"`
+			Vendor             string   `json:"vendor"`
+			Category           string   `json:"model_picker_category"`
+			PickerEnabled      bool     `json:"model_picker_enabled"`
+			Preview            bool     `json:"preview"`
+			SupportedEndpoints []string `json:"supported_endpoints"`
+			Policy             struct {
+				State string `json:"state"`
+			} `json:"policy"`
+			Capabilities struct {
+				Type     string `json:"type"`
+				Supports struct {
+					ReasoningEfforts []string `json:"reasoning_effort"`
+				} `json:"supports"`
+			} `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &catalog); err != nil {
+		return nil, err
+	}
+
+	var models []Model
+	for _, entry := range catalog.Data {
+		if !modelID.MatchString(entry.ID) || entry.Category == "" || !entry.PickerEnabled || entry.Policy.State == "disabled" {
+			continue
+		}
+		if entry.Capabilities.Type != "" && entry.Capabilities.Type != "chat" {
+			continue
+		}
+		if !slices.Contains(entry.SupportedEndpoints, "/chat/completions") &&
+			!slices.Contains(entry.SupportedEndpoints, "/responses") {
+			continue
+		}
+
+		name := entry.Name
+		if name == "" {
+			name = entry.ID
+		}
+		group := entry.Vendor
+		if group == "" {
+			group = "GitHub Copilot"
+		}
+		tag := strings.ToUpper(entry.Category[:1]) + entry.Category[1:]
+		if entry.Preview {
+			tag += " · Preview"
+		}
+		models = append(models, Model{
+			ID: entry.ID, Name: name, Group: group, Tag: tag,
+			Note:    "Available to this GitHub account.",
+			Efforts: sortEfforts(entry.Capabilities.Supports.ReasoningEfforts),
+		})
+	}
+	return models, nil
 }
 
 // Efforts lists the default reasoning levels of an engine, used when the
@@ -403,7 +477,7 @@ func CachedLevels() func(engineName, model string) []string {
 	return func(engineName, model string) []string {
 		mu.Lock()
 		defer mu.Unlock()
-		if engineName == "opencode" && model != "" {
+		if (engineName == "opencode" || engineName == "copilot") && model != "" {
 			if time.Since(read[engineName]) > time.Hour {
 				cache[engineName], read[engineName] = catalog(engineName), time.Now()
 			}

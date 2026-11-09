@@ -302,6 +302,28 @@ func (e CLI) ReportsActivity() bool { return e.Spec.Name == "opencode" }
 
 // Run implements Engine.
 func (e CLI) Run(ctx context.Context, req Request) (string, error) {
+	out, err := e.run(ctx, req)
+	if e.Spec.Name != "copilot" || e.Spec.Model == "" || e.Spec.Model == "auto" || !copilotModelUnavailable(err) {
+		return out, err
+	}
+
+	model := e.Spec.Model
+	if req.Progress != nil {
+		req.Progress(fmt.Sprintf("Copilot model %q is unavailable; retrying with Copilot Fusion (auto)", model))
+	}
+	e.Spec.Model, e.Spec.Effort = "auto", ""
+	out, fallbackErr := e.run(ctx, req)
+	if fallbackErr != nil {
+		return "", fmt.Errorf("Copilot model %q is unavailable (%v); retry with Copilot Fusion failed: %w", model, err, fallbackErr)
+	}
+	return out, nil
+}
+
+func copilotModelUnavailable(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "from --model flag is not available")
+}
+
+func (e CLI) run(ctx context.Context, req Request) (string, error) {
 	c, err := BuildCommand(e.Spec, req)
 	if err != nil {
 		return "", err

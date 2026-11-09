@@ -219,7 +219,10 @@ func TestEnginesThatAreOneBrandKeepTheirOwnGroup(t *testing.T) {
 }
 
 func TestCopilotKeepsItsBrandGroups(t *testing.T) {
-	got := OrderModels("copilot", copilotModels())
+	got := OrderModels("copilot", []Model{
+		{ID: "claude-opus-5.5", Name: "Claude Opus 5.5", Group: "Anthropic"},
+		{ID: "kimi-k3", Name: "Kimi K3", Group: "Moonshot AI"},
+	})
 	for _, m := range got {
 		if m.ID == "claude-opus-5.5" && (m.Tier != Heavy || m.Group != "Recommended") {
 			t.Errorf("opus = %+v", m)
