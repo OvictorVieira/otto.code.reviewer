@@ -147,6 +147,7 @@ func parseCopilotModels(data []byte) ([]Model, error) {
 			Name               string   `json:"name"`
 			Vendor             string   `json:"vendor"`
 			Category           string   `json:"model_picker_category"`
+			PickerEnabled      bool     `json:"model_picker_enabled"`
 			Preview            bool     `json:"preview"`
 			SupportedEndpoints []string `json:"supported_endpoints"`
 			Policy             struct {
@@ -166,7 +167,7 @@ func parseCopilotModels(data []byte) ([]Model, error) {
 
 	var models []Model
 	for _, entry := range catalog.Data {
-		if !modelID.MatchString(entry.ID) || entry.Category == "" || entry.Policy.State == "disabled" {
+		if !modelID.MatchString(entry.ID) || entry.Category == "" || !entry.PickerEnabled || entry.Policy.State == "disabled" {
 			continue
 		}
 		if entry.Capabilities.Type != "" && entry.Capabilities.Type != "chat" {

@@ -392,7 +392,7 @@ func (w *wizard) stepModel(i int) step {
 			if len(catalog) == 0 {
 				footer = spec.Name + " did not list any model"
 				if spec.Name == "copilot" {
-					footer = "No plan-available models loaded; check gh auth and network. CLI default remains available"
+					footer = "No individually selectable models loaded; check gh auth/network. CLI default (Copilot Fusion) remains available"
 				}
 			}
 

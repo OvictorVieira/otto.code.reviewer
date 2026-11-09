@@ -82,12 +82,13 @@ npm install -g @github/copilot
 copilot login
 ```
 
-`otto setup` fetches the model catalog for the active GitHub CLI account and shows models enabled for that account and
-supported by Copilot CLI. Use the same GitHub account for `gh` and `copilot login`; the catalog respects the account's
-plan and organization model policies. Otto does not accept arbitrary Copilot model IDs, but you can always choose the
-CLI default. If a model later becomes unavailable or the CLI rejects it, Otto tries configured fallback engines. Otto
-cannot bypass usage limits. For manual reviews, Otto posts reset details returned by the provider if all engines fail;
-it never guesses a reset time.
+`otto setup` fetches the model catalog for the active GitHub CLI account and shows only models enabled in that account's
+model picker and supported by Copilot CLI. Use the same GitHub account for `gh` and `copilot login`; the catalog respects
+the account's plan and organization model policies. Otto does not accept arbitrary Copilot model IDs, but you can always
+choose the CLI default (Copilot Fusion/automatic routing when that is what the plan provides). If a saved model later
+becomes unavailable, Otto retries once with `--model auto` before trying configured fallback engines. Otto cannot bypass
+usage limits. For manual reviews, Otto posts reset details returned by the provider if all engines fail; it never guesses
+a reset time.
 
 </details>
 

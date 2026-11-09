@@ -105,30 +105,33 @@ func TestCodexCatalogHidesModelsCodexHidesItself(t *testing.T) {
 func TestCopilotCatalogFiltersUnavailableAndUnsupportedModels(t *testing.T) {
 	models, err := parseCopilotModels([]byte(`{"data":[
 		{"id":"gpt-6-luna","name":"GPT-6 Luna","vendor":"OpenAI","model_picker_category":"lightweight",
-		 "supported_endpoints":["/responses"],"policy":{"state":"enabled"},
+		 "model_picker_enabled":false,"supported_endpoints":["/responses"],"policy":{"state":"enabled"},
 		 "capabilities":{"type":"chat","supports":{"reasoning_effort":["high","low"]}}},
 		{"id":"claude-sonnet-5.5","name":"Claude Sonnet 5.5","vendor":"Anthropic","model_picker_category":"versatile",
-		 "supported_endpoints":["/chat/completions"],"policy":{"state":"disabled"}},
+		 "model_picker_enabled":true,"supported_endpoints":["/chat/completions"],"policy":{"state":"disabled"}},
 		{"id":"copilot-search-a","name":"Copilot Agent A","supported_endpoints":["/chat/completions"]},
 		{"id":"embedding-model","name":"Embedding","model_picker_category":"lightweight","supported_endpoints":[]},
 		{"id":"new-model","name":"New Model","vendor":"Example","model_picker_category":"versatile",
-		 "supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}}
+		 "model_picker_enabled":true,"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}},
+		{"id":"selectable-model","name":"Selectable Model","vendor":"OpenAI","model_picker_category":"lightweight",
+		 "model_picker_enabled":true,"supported_endpoints":["/responses"],"policy":{"state":"enabled"},
+		 "capabilities":{"type":"chat","supports":{"reasoning_effort":["high","low"]}}}
 	]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(models) != 2 {
-		t.Fatalf("models = %+v, want the enabled and policy-unspecified chat models", models)
+		t.Fatalf("models = %+v, want only models enabled in the account's model picker", models)
 	}
 	var ids []string
 	for _, model := range models {
 		ids = append(ids, model.ID)
 	}
-	if !slices.Contains(ids, "gpt-6-luna") || !slices.Contains(ids, "new-model") {
+	if slices.Contains(ids, "gpt-6-luna") || !slices.Contains(ids, "new-model") || !slices.Contains(ids, "selectable-model") {
 		t.Errorf("models = %v, want only selectable models", ids)
 	}
 	for _, model := range models {
-		if model.ID == "gpt-6-luna" {
+		if model.ID == "selectable-model" {
 			if model.Group != "OpenAI" || model.Tag != "Lightweight" ||
 				!slices.Equal(model.Efforts, []string{"low", "high"}) {
 				t.Errorf("model metadata = %+v", model)
@@ -158,7 +161,7 @@ func TestFetchCopilotModelsUsesAuthenticatedAccountCatalog(t *testing.T) {
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-6-luna","name":"GPT-6 Luna","vendor":"OpenAI","model_picker_category":"lightweight","supported_endpoints":["/responses"]}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-6-luna","name":"GPT-6 Luna","vendor":"OpenAI","model_picker_category":"lightweight","model_picker_enabled":true,"supported_endpoints":["/responses"]}]}`)),
 			Header:     make(http.Header),
 		}, nil
 	})}

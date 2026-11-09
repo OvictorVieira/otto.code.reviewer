@@ -80,6 +80,46 @@ func TestOneRetryNoticeDoesNotStopAnEngineThatThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestCopilotUnavailableModelRetriesWithFusion(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("OTTO_TEST_CALLS", calls)
+	fakeCLI(t, "copilot", `printf '%s\n' "$*" >> "$OTTO_TEST_CALLS"
+case " $* " in
+  *" --model gpt-6-luna "*)
+    printf 'Error: Model "gpt-6-luna" from --model flag is not available.\n' >&2
+    exit 1
+    ;;
+esac
+printf '%s\n' '{"type":"assistant.message","data":{"content":"review done"}}'`)
+	var progress []string
+
+	out, err := CLI{Spec: Spec{Name: "copilot", Model: "gpt-6-luna", Effort: "high"}}.Run(context.Background(), Request{
+		Prompt: "review", Dir: t.TempDir(),
+		Progress: func(message string) { progress = append(progress, message) },
+	})
+
+	if err != nil || out != "review done" {
+		t.Fatalf("out = %q, err = %v, want the answer from Copilot Fusion", out, err)
+	}
+	b, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(attempts) != 2 {
+		t.Fatalf("calls = %q, want the unavailable model and one Fusion retry", b)
+	}
+	if !strings.Contains(attempts[0], "--model gpt-6-luna") || !strings.Contains(attempts[0], "--reasoning-effort high") {
+		t.Errorf("first call = %q, want the configured model and effort", attempts[0])
+	}
+	if !strings.Contains(attempts[1], "--model auto") || strings.Contains(attempts[1], "--reasoning-effort") {
+		t.Errorf("fallback call = %q, want auto without the unavailable effort", attempts[1])
+	}
+	if !strings.Contains(strings.Join(progress, "\n"), "Copilot Fusion") {
+		t.Errorf("progress = %v, want the fallback to be visible", progress)
+	}
+}
+
 func TestOpencodeAnswerThatMentionsAnErrorIsNotTreatedAsAFailure(t *testing.T) {
 	fakeCLI(t, "opencode", `printf 'Error: handling is missing in the retry path\n'; printf 'also fine\n' >&2`)
 
