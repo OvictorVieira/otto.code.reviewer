@@ -86,6 +86,8 @@ func TestCopilotUnavailableModelRetriesWithFusion(t *testing.T) {
 	fakeCLI(t, "copilot", `printf '%s\n' "$*" >> "$OTTO_TEST_CALLS"
 case " $* " in
   *" --model gpt-6-luna "*)
+    printf '%s\n' '{"type":"session.start","data":{"sessionId":"session-id","version":1,"producer":"copilot-agent","copilotVersion":"1.0.108","startTime":"2026-11-09T20:40:23.823Z","selectedModel":"gpt-6-luna","reasoningEffort":"high","contextTier":null,"context":{"cwd":"/tmp/worktree"},"alreadyInUse":false,"remoteSteerable":false},"id":"event-id","timestamp":"2026-11-09T20:40:24.087Z","parentId":null}'
+    printf '%s\n' '{"type":"session.model_change","data":{"source":"startup","contextTier":null,"newModel":"auto","previousModel":"gpt-6-luna","previousReasoningEffort":"high","reasoningEffort":null},"id":"event-id","timestamp":"2026-11-09T20:40:25.564Z","parentId":"event-id"}'
     printf 'Error: Model "gpt-6-luna" from --model flag is not available.\n' >&2
     exit 1
     ;;

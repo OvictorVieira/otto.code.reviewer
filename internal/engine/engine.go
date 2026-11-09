@@ -323,6 +323,15 @@ func copilotModelUnavailable(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "from --model flag is not available")
 }
 
+func copilotModelUnavailableMessage(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(strings.ToLower(line), "from --model flag is not available") {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
 func (e CLI) run(ctx context.Context, req Request) (string, error) {
 	c, err := BuildCommand(e.Spec, req)
 	if err != nil {
@@ -514,6 +523,12 @@ finished:
 			return "", &QuotaError{Details: tail(details, 1000)}
 		}
 		combined := stderrOutput + stdoutText.String()
+		if c.Bin == "copilot" {
+			// Copilot's structured stdout can push the model error off the generic error tail.
+			if message := copilotModelUnavailableMessage(combined); message != "" {
+				return "", fmt.Errorf("%s: %s", c.Bin, message)
+			}
+		}
 		return "", fmt.Errorf("%s: %w: %s", c.Bin, runErr, tail(combined, 400))
 	}
 
