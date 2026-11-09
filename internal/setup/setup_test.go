@@ -22,7 +22,7 @@ var catalogs = map[string][]engine.Model{
 		{ID: "anthropic/claude-sonnet-4", Name: "Claude Sonnet 4", Group: "anthropic", Tag: "$3 / $15", Efforts: []string{"low", "high", "max"}},
 	},
 	"copilot": {
-		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", Group: "OpenAI", Tag: "Premium", Note: "Uses premium requests; access depends on your Copilot plan and CLI version.", Efforts: []string{"low", "medium", "high", "xhigh"}},
+		{ID: "gpt-6-luna", Name: "GPT-6 Luna", Group: "OpenAI", Tag: "Lightweight", Note: "Available to this GitHub account.", Efforts: []string{"low", "medium", "high", "xhigh"}},
 	},
 	"agy": {
 		{ID: "gemini-3.8-flash-medium", Name: "Gemini 3.8 Flash (Medium)", Group: "Google", Efforts: []string{"low", "medium", "high"}},
@@ -139,18 +139,18 @@ func TestSettingUpOnlyOpencodeNeverVisitsTheOtherEngines(t *testing.T) {
 	}
 }
 
-func TestCopilotListsPremiumModelsAndAllowsTypingOtherIds(t *testing.T) {
+func TestCopilotListsAccountModelsWithoutAllowingArbitraryIds(t *testing.T) {
 	d := start(t)
 	d.key(tea.KeyEnter) // repositories
 	d.key(tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyDown, tea.KeyEnter)
 
-	if screen := d.screen(); !strings.Contains(screen, "GPT-5.3 Codex") ||
-		!strings.Contains(screen, "Premium") || !strings.Contains(screen, "Type a model id") {
-		t.Fatalf("Copilot picker should show paid models and allow custom IDs:\n%s", screen)
+	if screen := d.screen(); !strings.Contains(screen, "GPT-6 Luna") ||
+		strings.Contains(screen, "Type a model id") || strings.Contains(screen, "Recommended for each size") {
+		t.Fatalf("Copilot picker should show only listed account models and available recommendations:\n%s", screen)
 	}
-	d.key(tea.KeyDown, tea.KeyEnter) // select GPT-5.3 Codex
-	if got := d.w.cfg.Engines[0].Model; got != "gpt-5.3-codex" {
-		t.Fatalf("model = %q, want gpt-5.3-codex", got)
+	d.key(tea.KeyDown, tea.KeyEnter) // select GPT-6 Luna
+	if got := d.w.cfg.Engines[0].Model; got != "gpt-6-luna" {
+		t.Fatalf("model = %q, want gpt-6-luna", got)
 	}
 	if strings.Contains(d.screen(), "select effort") {
 		t.Fatalf("the effort is picked per pull request, never in setup:\n%s", d.screen())

@@ -316,6 +316,18 @@ func TestPickingAFreeModelSavesExactlyThatIdNotAPaidLookAlike(t *testing.T) {
 
 func TestTheRecommendedFreeModelsCanBePickedForEverySizeAtOnce(t *testing.T) {
 	d := startMenu(t, configured())
+	d.w.deps.Catalog = func(name string) []engine.Model {
+		if name != "opencode" {
+			return catalogs[name]
+		}
+		return append(append([]engine.Model(nil), catalogs[name]...),
+			engine.Model{ID: "openrouter/cohere/north-mini-code:free", Name: "North Mini Code", Free: true},
+			engine.Model{ID: "openrouter/anthropic/claude-haiku-5.5", Name: "Claude Haiku 5.5"},
+			engine.Model{ID: "openrouter/anthropic/claude-sonnet-5.5", Name: "Claude Sonnet 5.5"},
+			engine.Model{ID: "openrouter/anthropic/claude-opus-5.5", Name: "Claude Opus 5.5"},
+			engine.Model{ID: "openrouter/thinkingmachines/inkling:free", Name: "Inkling", Free: true},
+		)
+	}
 	d.pick("Models")
 	d.pick("1.")
 	d.pick("Change model")
